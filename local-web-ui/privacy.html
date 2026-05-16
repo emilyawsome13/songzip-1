@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SongZip Privacy Policy</title>
+  <meta
+    name="description"
+    content="SongZip privacy policy covering limited account data, official provider sign-in, and personal research workflow disclosures."
+  >
+  <meta name="theme-color" content="#08111a">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="ambient ambient-three" aria-hidden="true"></div>
+
+  <div class="policy-shell">
+    <header class="policy-topbar">
+      <a href="/">&larr; Back to SongZip</a>
+      <div class="policy-actions">
+        <a href="/acceptable-use.html">Acceptable Use</a>
+        <a href="/privacy-policy.docx" download>Download DOCX</a>
+      </div>
+    </header>
+
+    <main class="policy-layout">
+      <section class="policy-callout policy-hero">
+        <p class="eyebrow">Privacy Policy</p>
+        <h1>SongZip Privacy Policy</h1>
+        <p class="policy-subtitle">
+          Last updated May 16, 2026. This page is a transparency document for the current
+          SongZip dashboard build. It is not legal advice, and the product's real behavior controls.
+        </p>
+        <p class="policy-meta">
+          Short public summary: SongZip is intended for personal research, evaluation, and
+          entertainment-related organization workflows. Where account linking is offered, it
+          uses official provider authorization, requests limited permissions, and is not
+          intended to sell personal data, use borrowed credentials, or hide how provider data
+          is accessed.
+        </p>
+      </section>
+
+      <section class="policy-section">
+        <h2>1. Scope and purpose</h2>
+        <p>
+          SongZip is positioned as a personal workflow dashboard for queueing media-related
+          requests, checking progress, and optionally linking a user's own provider account
+          through official OAuth flows when a feature needs it.
+        </p>
+        <p>
+          This policy explains what limited data SongZip may process, why it may process it,
+          and how the service should avoid misleading users about privacy or account access.
+        </p>
+      </section>
+
+      <section class="policy-section">
+        <h2>2. Data SongZip may process</h2>
+        <p>
+          If account linking is enabled, SongZip may need to process a limited set of account
+          and authorization data so the requested feature can work.
+        </p>
+        <ul class="policy-list">
+          <li>Provider account identifiers</li>
+          <li>Display names or email-style account labels returned by the provider</li>
+          <li>Access tokens and refresh tokens</li>
+          <li>Granted scopes and token expiry timestamps</li>
+          <li>Session identifiers and connection-status metadata</li>
+        </ul>
+        <p>
+          If OAuth is enabled, SongZip should not claim that it collects "no user data." The
+          more accurate statement is that it is intended to process only the limited
+          authorization and account data needed for the user-requested feature.
+        </p>
+      </section>
+
+      <section class="policy-section">
+        <h2>3. How data should be used</h2>
+        <ul class="policy-list">
+          <li>To complete official account-linking flows initiated by the user</li>
+          <li>To maintain the user's active session and connected-account status</li>
+          <li>To refresh tokens when needed for the exact user-facing feature that was authorized</li>
+          <li>To provide visible dashboard features tied to the linked account</li>
+        </ul>
+        <p>SongZip is not intended to use provider or user data for unrelated profiling, advertising, or resale.</p>
+      </section>
+
+      <section class="policy-section">
+        <h2>4. Data use limits</h2>
+        <ul class="policy-list">
+          <li>SongZip should not sell or rent personal data.</li>
+          <li>SongZip should not use personal data for ad targeting or broker-style transfers.</li>
+          <li>SongZip should not ask users to paste raw tokens into the interface.</li>
+          <li>SongZip should not accept borrowed, shared, leaked, or third-party credentials.</li>
+          <li>SongZip should not use OAuth-linked data to claim it can bypass platform quotas or reviews.</li>
+        </ul>
+      </section>
+
+      <section class="policy-section">
+        <h2>5. Permissions and provider access</h2>
+        <p>SongZip should use official documented access methods and request only the minimum relevant permissions for the feature being provided.</p>
+        <ul class="policy-list">
+          <li>Users should connect their own Spotify or Google accounts through official provider sign-in pages.</li>
+          <li>Permissions should be requested in context and tied to a visible feature.</li>
+          <li>If a new feature requires broader permissions, disclosures should be updated before access is requested.</li>
+        </ul>
+      </section>
+
+      <section class="policy-section">
+        <h2>6. Retention, security, and current limitations</h2>
+        <p>
+          Before public deployment, SongZip should implement encrypted secret storage, clear
+          retention rules, disconnect and deletion workflows, and access controls around any
+          stored connection records.
+        </p>
+        <p>
+          The current local prototype stores limited OAuth connection records server-side for
+          operational use. Until encryption and retention controls are hardened, it should not
+          be described as a production-grade privacy implementation.
+        </p>
+      </section>
+
+      <section class="policy-section">
+        <h2>7. Spotify and Google / YouTube commitments</h2>
+        <ul class="policy-list">
+          <li>Provide accurate privacy disclosures for Spotify data access and use.</li>
+          <li>Avoid misleading users about how provider data is accessed or what permissions are needed.</li>
+          <li>Respect minimum-permission expectations in Spotify and Google policies.</li>
+          <li>Avoid prohibited uses of provider data, including unauthorized transfers or deceptive access patterns.</li>
+        </ul>
+      </section>
+
+      <section class="policy-section">
+        <h2>8. User controls and transparency</h2>
+        <ul class="policy-list">
+          <li>Show which providers are connected and what permissions were granted.</li>
+          <li>Explain what limited data is stored server-side for account linking.</li>
+          <li>Provide a disconnect option where account linking is offered.</li>
+          <li>Keep public privacy language aligned with the real product behavior.</li>
+        </ul>
+      </section>
+
+      <section class="policy-section">
+        <h2>9. Source references</h2>
+        <ul class="policy-list-tight">
+          <li><a href="https://developer.spotify.com/policy" target="_blank" rel="noreferrer">Spotify Developer Policy</a></li>
+          <li><a href="https://developer.spotify.com/terms" target="_blank" rel="noreferrer">Spotify Developer Terms</a></li>
+          <li><a href="https://developer.spotify.com/documentation/web-api/concepts/rate-limits" target="_blank" rel="noreferrer">Spotify Web API rate limits</a></li>
+          <li><a href="https://developer.spotify.com/documentation/web-api/concepts/quota-modes" target="_blank" rel="noreferrer">Spotify quota modes</a></li>
+          <li><a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noreferrer">Google API Services User Data Policy</a></li>
+          <li><a href="https://developers.google.com/youtube/terms/developer-policies" target="_blank" rel="noreferrer">YouTube API Services Developer Policies</a></li>
+          <li><a href="https://developers.google.com/youtube/v3/guides/quota_and_compliance_audits" target="_blank" rel="noreferrer">YouTube quota and compliance audits</a></li>
+        </ul>
+      </section>
+
+      <section class="policy-sibling">
+        <strong>Related document</strong>
+        <p>For rules about personal research positioning, no shared tokens, no quota-circumvention claims, and provider-behavior limits, read the <a href="/acceptable-use.html">Acceptable Use Policy</a>.</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

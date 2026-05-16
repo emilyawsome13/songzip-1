@@ -1,0 +1,68 @@
+services:
+  - type: web
+    name: songzip
+    runtime: docker
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /api/version
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: songzip-data
+      mountPath: /var/data/songzip
+      sizeGB: 10
+    envVars:
+      - key: SPOTDL_DATA_DIR
+        value: /var/data/songzip
+      - key: SPOTDL_WEB_USE_OUTPUT_DIR
+        value: "true"
+      - key: SPOTDL_OUTPUT_ROOT
+        value: /var/data/songzip/downloads
+      - key: SPOTDL_OUTPUT_TEMPLATE
+        value: "{artist} - {title}.{output-ext}"
+      - key: SPOTDL_FORMAT
+        value: mp3
+      - key: SPOTDL_BUNDLE_FLATTEN
+        value: "true"
+      - key: SPOTDL_BUNDLE_COMPRESSION
+        value: store
+      - key: SPOTDL_AUDIO_PROVIDERS
+        value: soundcloud,youtube,bandcamp
+      - key: SPOTDL_THREADS
+        value: "3"
+      - key: SPOTDL_DOWNLOAD_GAP_SECONDS
+        value: "2"
+      - key: SPOTDL_YT_DLP_ARGS
+        value: "--concurrent-fragments 2 --extractor-args youtube:player_client=web"
+      - key: SPOTDL_LOG_LEVEL
+        value: INFO
+      - key: SPOTDL_CLIENT_ID
+        sync: false
+      - key: SPOTDL_CLIENT_SECRET
+        sync: false
+      - key: SPOTDL_SPOTIFY_OAUTH_CLIENT_ID
+        sync: false
+      - key: SPOTDL_SPOTIFY_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: SPOTDL_SPOTIFY_OAUTH_REDIRECT_URI
+        sync: false
+      - key: SPOTDL_GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: SPOTDL_GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: SPOTDL_GOOGLE_OAUTH_REDIRECT_URI
+        sync: false
+      - key: SONGZIP_PAYPAL_CLIENT_ID
+        sync: false
+      - key: SONGZIP_PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: SONGZIP_PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: SONGZIP_PAYPAL_API_BASE
+        value: https://api-m.sandbox.paypal.com
+      - key: SONGZIP_PAYPAL_BASIC_PLAN_ID
+        value: P-68Y262703G6930321NID6XTQ
+      - key: SONGZIP_PAYPAL_PLUS_PLAN_ID
+        value: P-95499278FS551045NNID6Y2Y
+      - key: SONGZIP_PAYPAL_PRO_PLAN_ID
+        value: P-3HV972983J415051HNID6Z2A

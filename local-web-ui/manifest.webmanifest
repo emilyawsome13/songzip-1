@@ -1,0 +1,17 @@
+{
+  "name": "SongZip",
+  "short_name": "SongZip",
+  "description": "Installable SongZip app for subscriptions, queueing downloads, and saving completed MP3 bundles.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09111c",
+  "theme_color": "#09111c",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

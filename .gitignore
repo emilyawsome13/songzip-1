@@ -1,0 +1,27 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.spotdl.env
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+
+# Local runtime state
+.spotdl-tools/
+.spotdl-web/
+.render-spotdl/
+*.log
+
+# Downloaded media and bundles
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.opus
+*.wav
+*.zip

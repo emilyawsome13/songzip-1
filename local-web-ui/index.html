@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SongZip</title>
+  <meta
+    name="description"
+    content="Queue multiple links, connect your own accounts, and save flat MP3 bundles in one cleaner SongZip workflow."
+  >
+  <meta name="theme-color" content="#08111a">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="ambient ambient-three" aria-hidden="true"></div>
+
+  <div class="shell">
+    <header class="topbar" data-reveal style="--delay: 0.04s;">
+      <div>
+        <h1 class="brand-title">SongZip</h1>
+        <p class="brand-subtitle">One queue, cleaner device downloads, and simpler plan switching.</p>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="connection-pill">
+          <span class="connection-dot" id="connectionDot"></span>
+          <span id="connectionStatus">Connecting</span>
+        </div>
+        <button class="button button-secondary" id="refreshStateButton" type="button">
+          Refresh
+        </button>
+        <button class="button button-ghost" id="shareSiteButton" type="button">
+          Share
+        </button>
+        <button class="button button-secondary" id="installButton" type="button" hidden>
+          Install
+        </button>
+      </div>
+    </header>
+
+    <div class="status-banner" id="banner" aria-live="polite" hidden></div>
+
+    <main class="layout">
+      <section class="hero panel panel-wide" data-reveal style="--delay: 0.08s;">
+        <div class="hero-copy">
+          <p class="eyebrow">Personal workflow</p>
+          <h2>Queue multiple links once. Save flat MP3 bundles to your device.</h2>
+          <p class="hero-text">
+            SongZip keeps the flow tight: bring your own account when you need it,
+            paste multiple links into one queue, and save clean device-ready files
+            without extra folder clutter.
+          </p>
+          <div class="hero-tags">
+            <span class="tag">Own-account OAuth</span>
+            <span class="tag">Multiple links in one queue</span>
+            <span class="tag">Flat MP3 delivery</span>
+          </div>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#workspace">Open Queue</a>
+            <a class="button button-secondary" href="#plans">View Plans</a>
+          </div>
+        </div>
+
+        <div class="signal-grid" aria-label="Workflow highlights">
+          <article class="signal-card">
+            <span class="signal-number">01</span>
+            <strong class="signal-label">One queue</strong>
+            <p class="signal-copy">Paste mixed links or search terms, one per line, in one clean workspace.</p>
+          </article>
+          <article class="signal-card">
+            <span class="signal-number">02</span>
+            <strong class="signal-label">Own-account access</strong>
+            <p class="signal-copy">Connect Spotify or Google only when you want personal-library access.</p>
+          </article>
+          <article class="signal-card">
+            <span class="signal-number">03</span>
+            <strong class="signal-label">Device-ready saving</strong>
+            <p class="signal-copy">Keep mobile downloads flatter and easier to save without nested folders.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel panel-wide" id="plans" data-reveal style="--delay: 0.12s;">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Plans</p>
+            <h2>Pick one plan and stay on the same page</h2>
+          </div>
+          <p class="section-note">Free tier includes 50 songs, then SongZip prompts for an upgrade. Paid plans stay in one lighter checkout stage.</p>
+        </div>
+
+        <div class="plan-switcher">
+          <div class="plan-tabs" role="tablist" aria-label="Subscription plans" data-plan-tabs>
+            <button class="plan-tab is-active" id="plan-tab-basic" type="button" role="tab" aria-selected="true" aria-controls="plan-panel-basic" tabindex="0" data-plan-tab data-plan="Basic">
+              <span class="plan-tab-top">
+                <span class="plan-tab-name">Basic</span>
+                <span class="plan-tab-price">$7.99</span>
+              </span>
+              <span class="plan-tab-copy">Lighter monthly use and simple device downloads.</span>
+            </button>
+
+            <button class="plan-tab" id="plan-tab-plus" type="button" role="tab" aria-selected="false" aria-controls="plan-panel-plus" tabindex="-1" data-plan-tab data-plan="Plus">
+              <span class="plan-tab-top">
+                <span class="plan-tab-name">Plus</span>
+                <span class="plan-tab-price">$14.99</span>
+              </span>
+              <span class="plan-tab-copy">More room, faster throughput, and smoother weekly use.</span>
+            </button>
+
+            <button class="plan-tab" id="plan-tab-pro" type="button" role="tab" aria-selected="false" aria-controls="plan-panel-pro" tabindex="-1" data-plan-tab data-plan="Pro">
+              <span class="plan-tab-top">
+                <span class="plan-tab-name">Pro</span>
+                <span class="plan-tab-price">$24.99</span>
+              </span>
+              <span class="plan-tab-copy">The fastest lane for larger jobs and higher priority handling.</span>
+            </button>
+          </div>
+
+          <div class="plan-stage">
+            <article class="plan-panel is-active" id="plan-panel-basic" role="tabpanel" aria-labelledby="plan-tab-basic" data-plan-panel="Basic">
+              <div class="plan-stage-grid">
+                <div class="plan-story">
+                  <span class="plan-badge">Best to start</span>
+                  <p class="eyebrow">Basic</p>
+                  <h3>$7.99 / month</h3>
+                  <p class="plan-kicker">For lighter personal use</p>
+                  <p class="plan-copy">A clean entry point if you want one queue, simple progress tracking, and easy device-ready downloads.</p>
+
+                  <div class="plan-highlights">
+                    <div class="plan-highlight">
+                      <strong>100</strong>
+                      <span>downloads each month</span>
+                    </div>
+                    <div class="plan-highlight">
+                      <strong>Flat MP3 ZIP</strong>
+                      <span>made for cleaner phone-friendly saving</span>
+                    </div>
+                    <div class="plan-highlight">
+                      <strong>Standard</strong>
+                      <span>queue speed with a simple workflow</span>
+                    </div>
+                  </div>
+
+                  <p class="plan-list-label">What you get</p>
+                  <ul class="plan-perks">
+                    <li>100 downloads each month</li>
+                    <li>Flat MP3 ZIP bundles for cleaner device saving</li>
+                    <li>Standard queue speed</li>
+                  </ul>
+                </div>
+
+                <div class="payment-card">
+                  <p class="payment-card-label">Start Basic in PayPal</p>
+                  <div id="paypal-button-container-P-68Y262703G6930321NID6XTQ" class="paypal-slot"></div>
+                  <p class="payment-note" id="paypalBasicStatus" aria-live="polite">Loading official PayPal checkout...</p>
+                  <p class="payment-subnote">Subscription and billing are managed by PayPal.</p>
+                  <div class="plan-microcopy">
+                    <span class="plan-microcopy-pill">Monthly billing</span>
+                    <span class="plan-microcopy-pill">Clean on mobile</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="plan-panel" id="plan-panel-plus" role="tabpanel" aria-labelledby="plan-tab-plus" data-plan-panel="Plus" hidden>
+              <div class="plan-stage-grid">
+                <div class="plan-story">
+                  <p class="eyebrow">Plus</p>
+                  <h3>$14.99 / month</h3>
+                  <p class="plan-kicker">For regular weekly use</p>
+                  <p class="plan-copy">More room, faster throughput, and a smoother everyday workflow when Basic starts to feel tight.</p>
+
+                  <div class="plan-highlights">
+                    <div class="plan-highlight">
+                      <strong>400</strong>
+                      <span>downloads each month</span>
+                    </div>
+                    <div class="plan-highlight">
+                      <strong>Large jobs</strong>
+                      <span>bigger queues and fuller bundles</span>
+                    </div>
+                    <div class="plan-highlight">
+                      <strong>Priority</strong>
+                      <span>processed ahead of Basic jobs</span>
+                    </div>
+                  </div>
+
+                  <p class="plan-list-label">What you get</p>
+                  <ul class="plan-perks">
+                    <li>400 downloads each month</li>
+                    <li>Larger queues and bundles</li>
+                    <li>Priority over Basic jobs</li>
+                  </ul>
+                </div>
+
+                <div class="payment-card">
+                  <p class="payment-card-label">Start Plus in PayPal</p>
+                  <div id="paypal-button-container-P-95499278FS551045NNID6Y2Y" class="paypal-slot"></div>
+                  <p class="payment-note" id="paypalPlusStatus" aria-live="polite">Loading official PayPal checkout...</p>
+                  <p class="payment-subnote">Subscription and billing are managed by PayPal.</p>
+                  <div class="plan-microcopy">
+                    <span class="plan-microcopy-pill">Faster throughput</span>
+                    <span class="plan-microcopy-pill">Better for recurring use</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="plan-panel" id="plan-panel-pro" role="tabpanel" aria-labelledby="plan-tab-pro" data-plan-panel="Pro" hidden>
+              <div class="plan-stage-grid">
+                <div class="plan-story">
+                  <p class="eyebrow">Pro</p>
+                  <h3>$24.99 / month</h3>
+                  <p class="plan-kicker">For heavier batch workflows</p>
+                  <p class="plan-copy">The fastest lane when you want larger jobs, higher priority, and fewer day-to-day bottlenecks.</p>
+
+                  <div class="plan-highlights">
+                    <div class="plan-highlight">
+                      <strong>1,500</strong>
+                      <span>downloads each month</span>
+                    </div>
+                    <div class="plan-highlight">
+                      <strong>Largest jobs</strong>
+                      <span>best for bigger queue and ZIP work</span>
+                    </div>
+                    <div class="plan-highlight">
+                      <strong>Fastest lane</strong>
+                      <span>highest priority processing</span>
+                    </div>
+                  </div>
+
+                  <p class="plan-list-label">What you get</p>
+                  <ul class="plan-perks">
+                    <li>1,500 downloads each month</li>
+                    <li>Largest queue and ZIP jobs</li>
+                    <li>Fastest processing lane</li>
+                  </ul>
+                </div>
+
+                <div class="payment-card">
+                  <p class="payment-card-label">Start Pro in PayPal</p>
+                  <div id="paypal-button-container-P-3HV972983J415051HNID6Z2A" class="paypal-slot"></div>
+                  <p class="payment-note" id="paypalProStatus" aria-live="polite">Loading official PayPal checkout...</p>
+                  <p class="payment-subnote">Subscription and billing are managed by PayPal.</p>
+                  <div class="plan-microcopy">
+                    <span class="plan-microcopy-pill">Highest priority</span>
+                    <span class="plan-microcopy-pill">Best for large batches</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <div class="workspace-grid panel-wide" id="workspace">
+        <section class="panel queue-panel" data-reveal style="--delay: 0.16s;">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Queue</p>
+              <h2>Build one download run</h2>
+            </div>
+            <span class="status-pill" id="jobStatusPill">Idle</span>
+          </div>
+
+          <div class="tier-strip">
+            <div class="tier-chip">
+              <span class="mini-label">Current tier</span>
+              <strong id="tierName">Free</strong>
+            </div>
+            <div class="tier-chip">
+              <span class="mini-label">Usage</span>
+              <strong id="tierUsage">0 / 50 songs</strong>
+            </div>
+            <button class="button button-secondary" id="upgradeNowButton" type="button">
+              Upgrade
+            </button>
+          </div>
+
+          <div class="account-strip">
+            <div class="account-chip">
+              <span class="mini-label">Account key</span>
+              <strong id="accountKeyValue">Preparing</strong>
+              <p class="helper-copy" id="accountStatusCopy">Use this same key on another device to restore the same paid tier and usage state.</p>
+            </div>
+            <div class="account-actions">
+              <label class="field compact-field">
+                <span class="field-label">Switch or restore a key</span>
+                <input
+                  id="accountKeyInput"
+                  type="text"
+                  inputmode="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Paste a SongZip account key"
+                >
+              </label>
+              <div class="button-row compact-buttons">
+                <button class="button button-secondary" id="copyAccountKeyButton" type="button">
+                  Copy Key
+                </button>
+                <button class="button button-primary" id="useAccountKeyButton" type="button">
+                  Use Key
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="account-auth-panel">
+            <div class="section-heading compact-heading">
+              <div>
+                <p class="eyebrow">Account</p>
+                <h3>Sign in across devices</h3>
+              </div>
+              <span class="status-pill" id="accountAuthStatus">Guest</span>
+            </div>
+            <p class="helper-copy" id="accountAuthCopy">Create a SongZip account to carry your tier and billing state across devices without pasting a key every time.</p>
+            <div class="settings-grid">
+              <label class="field">
+                <span class="field-label">Email</span>
+                <input id="accountEmailInput" type="text" inputmode="email" autocomplete="email" placeholder="you@example.com">
+              </label>
+              <label class="field">
+                <span class="field-label">Password</span>
+                <input id="accountPasswordInput" type="password" autocomplete="current-password" placeholder="At least 8 characters">
+              </label>
+            </div>
+            <div class="button-row compact-buttons">
+              <button class="button button-primary" id="accountRegisterButton" type="button">Create Account</button>
+              <button class="button button-secondary" id="accountLoginButton" type="button">Sign In</button>
+              <button class="button button-secondary" id="accountLogoutButton" type="button" hidden>Sign Out</button>
+            </div>
+          </div>
+
+          <form id="queryForm" class="query-form">
+            <label class="field">
+              <span class="field-label">Paste one or more links</span>
+              <textarea
+                id="queryInput"
+                name="query"
+                rows="7"
+                placeholder="Add one item per line."
+              ></textarea>
+            </label>
+            <p class="field-help">Mix tracks, playlists, or search terms in the same queue. Each line becomes one request.</p>
+
+            <div class="button-row">
+              <button class="button button-primary" id="startDownloadButton" type="submit">
+                Start
+              </button>
+              <button class="button button-secondary" id="clearQueryButton" type="button">
+                Clear
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel live-panel" data-reveal style="--delay: 0.2s;">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Live</p>
+              <h2>Progress and files</h2>
+            </div>
+          </div>
+
+          <div class="mini-meta">
+            <div>
+              <span class="mini-label">Session</span>
+              <strong id="sessionValue">Preparing</strong>
+            </div>
+            <div>
+              <span class="mini-label">Version</span>
+              <strong id="versionValue">Loading</strong>
+            </div>
+            <div>
+              <span class="mini-label">Format</span>
+              <strong id="compatibilityStatus">Evaluating</strong>
+            </div>
+          </div>
+
+          <p class="helper-copy" id="formatCompatibility">
+            Format guidance will appear here after settings load.
+          </p>
+
+          <div class="stats-grid">
+            <article class="stat-card">
+              <span class="stat-label">Total</span>
+              <strong class="stat-value" id="statTotal">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">Active</span>
+              <strong class="stat-value" id="statActive">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">Done</span>
+              <strong class="stat-value" id="statCompleted">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">Failed</span>
+              <strong class="stat-value" id="statFailed">0</strong>
+            </article>
+          </div>
+
+          <div class="progress-block">
+            <div class="progress-head">
+              <span>Progress</span>
+              <strong id="progressValue">0%</strong>
+            </div>
+            <div class="progress-track">
+              <div class="progress-bar" id="progressBar"></div>
+            </div>
+          </div>
+
+          <dl class="meta-list">
+            <div>
+              <dt>Status</dt>
+              <dd id="metaStatus">Idle</dd>
+            </div>
+            <div>
+              <dt>Resolved</dt>
+              <dd id="metaResolved">0 songs</dd>
+            </div>
+            <div>
+              <dt>Started</dt>
+              <dd id="metaStarted">Not started</dd>
+            </div>
+            <div>
+              <dt>Finished</dt>
+              <dd id="metaFinished">Not finished</dd>
+            </div>
+            <div class="meta-wide">
+              <dt>Last error</dt>
+              <dd id="metaError">None</dd>
+            </div>
+            <div class="meta-wide hidden-row" hidden>
+              <dt>Output root</dt>
+              <dd id="metaOutputRoot">Waiting for session</dd>
+            </div>
+          </dl>
+
+          <div class="panel-divider"></div>
+
+          <div class="section-heading compact-heading">
+            <div>
+              <p class="eyebrow">Downloads</p>
+              <h2>Ready files</h2>
+            </div>
+            <a class="button button-primary disabled" id="bundleLink" href="#" aria-disabled="true">
+              ZIP Not Ready
+            </a>
+          </div>
+
+          <p class="helper-copy" id="downloadAdvice">
+            Use Save to Device for single files or the ZIP button for the full batch.
+          </p>
+
+          <div class="downloads-list empty-state" id="downloadsList">
+            Completed files will appear here after a job finishes.
+          </div>
+        </section>
+      </div>
+
+      <details class="panel panel-wide collapsible" data-reveal style="--delay: 0.24s;">
+        <summary>More tools</summary>
+        <div class="details-body details-stack">
+          <section class="compact-section">
+            <h3>Connected accounts</h3>
+            <p class="helper-copy">Connect your own Spotify or Google account for personal-library access inside this dashboard.</p>
+            <div id="authProviders" class="auth-providers empty-state">
+              Checking available account connections...
+            </div>
+          </section>
+
+          <section class="compact-section">
+            <h3>Search first</h3>
+            <form id="searchForm" class="search-form">
+              <input
+                id="searchInput"
+                type="text"
+                placeholder="Preview a track before adding it"
+              >
+              <button class="button button-secondary" id="searchButton" type="submit">
+                Preview
+              </button>
+            </form>
+            <div id="searchResults" class="search-results empty-state">
+              Search results will appear here.
+            </div>
+          </section>
+
+          <section class="compact-section">
+            <h3>Queue details</h3>
+            <div class="song-list empty-state" id="songList">
+              No songs have been queued in this session yet.
+            </div>
+          </section>
+
+          <section class="compact-section">
+            <h3>Settings</h3>
+            <form id="settingsForm" class="settings-form">
+              <div id="settingsGroups" class="settings-groups">
+                <div class="empty-state">Loading settings model...</div>
+              </div>
+              <div class="button-row">
+                <button class="button button-primary" id="saveSettingsButton" type="submit">
+                  Save Settings
+                </button>
+                <button class="button button-secondary" id="reloadSettingsButton" type="button">
+                  Reload
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section class="compact-section">
+            <h3>Activity</h3>
+            <div class="events-list empty-state" id="eventsList">
+              Session events will appear here once the page connects.
+            </div>
+          </section>
+        </div>
+      </details>
+
+      <footer class="site-footer panel panel-wide" data-reveal style="--delay: 0.28s;">
+        <div class="site-footer-main">
+          <div class="site-footer-brand">
+            <strong>SongZip</strong>
+            <p>Privacy and acceptable-use documents for the current dashboard build.</p>
+          </div>
+
+          <nav class="footer-links" aria-label="Policy links">
+            <a href="/privacy.html">Privacy Policy</a>
+            <a href="/acceptable-use.html">Acceptable Use</a>
+            <a href="/privacy-policy.docx" download>Privacy DOCX</a>
+            <a href="/acceptable-use-policy.docx" download>Use Policy DOCX</a>
+          </nav>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <div class="upgrade-modal-backdrop" id="upgradeModal" hidden>
+    <div class="upgrade-modal" role="dialog" aria-modal="true" aria-labelledby="upgradeModalTitle">
+      <button class="upgrade-close" id="closeUpgradeModal" type="button" aria-label="Close upgrade prompt">
+        ×
+      </button>
+      <p class="eyebrow">Upgrade</p>
+      <h2 id="upgradeModalTitle">Free tier limit reached</h2>
+      <p class="helper-copy" id="upgradeModalCopy">
+        Upgrade to keep downloading more songs.
+      </p>
+      <div class="upgrade-actions">
+        <button class="button button-primary" type="button" data-upgrade-plan="Basic">View Basic</button>
+        <button class="button button-secondary" type="button" data-upgrade-plan="Plus">View Plus</button>
+        <button class="button button-secondary" type="button" data-upgrade-plan="Pro">View Pro</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
