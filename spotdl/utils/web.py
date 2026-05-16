@@ -42,7 +42,7 @@ from uvicorn import Server
 from websockets.exceptions import ConnectionClosed
 
 from spotdl._version import __version__
-from spotdl.download.downloader import Downloader
+from spotdl.download.downloader import Downloader, DownloaderError
 from spotdl.download.progress_handler import ProgressHandler, SongTracker
 from spotdl.types.album import Album
 from spotdl.types.artist import Artist
@@ -2083,20 +2083,29 @@ def get_client(
         else account_key
     )
 
-    instance = Client.get_instance(client_id)
-    if instance is None:
-        instance = Client(
-            None,
-            client_id,
-            account_key=resolved_account_key,
-            authenticated_account=authenticated_account,
-        )
-        instance._refresh_completed_downloads_from_output()
-        app_state.clients[client_id] = instance
-    else:
-        instance.set_authenticated_account(authenticated_account)
-        instance.set_account_key(resolved_account_key)
-        instance.subscription = instance._load_subscription_state()
+    try:
+        instance = Client.get_instance(client_id)
+        if instance is None:
+            instance = Client(
+                None,
+                client_id,
+                account_key=resolved_account_key,
+                authenticated_account=authenticated_account,
+            )
+            instance._refresh_completed_downloads_from_output()
+            app_state.clients[client_id] = instance
+        else:
+            instance.set_authenticated_account(authenticated_account)
+            instance.set_account_key(resolved_account_key)
+            instance.subscription = instance._load_subscription_state()
+    except DownloaderError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "SongZip could not initialize the downloader runtime. "
+                f"{error}"
+            ),
+        ) from error
 
     return instance
 
