@@ -47,10 +47,18 @@ services:
       - key: SPOTDL_SPOTIFY_OAUTH_REDIRECT_URI
         sync: false
       - key: SPOTDL_GOOGLE_OAUTH_CLIENT_ID
-        sync: false
+        value: 420462376171-15avcu8n0gl3q04dmb8p90v5tgg469al.apps.googleusercontent.com
       - key: SPOTDL_GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
       - key: SPOTDL_GOOGLE_OAUTH_REDIRECT_URI
+        value: https://songzip.onrender.com/api/auth/callback/youtube
+      - key: SONGZIP_GOOGLE_LOGIN_CLIENT_ID
+        value: 420462376171-15avcu8n0gl3q04dmb8p90v5tgg469al.apps.googleusercontent.com
+      - key: SONGZIP_GOOGLE_LOGIN_CLIENT_SECRET
+        sync: false
+      - key: SONGZIP_GOOGLE_LOGIN_REDIRECT_URI
+        value: https://songzip.onrender.com/api/account/google/callback
+      - key: SONGZIP_ADMIN_EMAIL
         sync: false
       - key: SONGZIP_PAYPAL_CLIENT_ID
         sync: false
