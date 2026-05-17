@@ -31,6 +31,7 @@ SESSION_TTL_DAYS = 30
 PASSWORD_ITERATIONS = 240_000
 GOOGLE_PASSWORD_PLACEHOLDER = "oauth_google"
 ADMIN_ACCOUNT_META_KEY = "songzip_admin_account_key"
+SUPPORTED_MEMBERSHIP_TIERS = {"free", "basic", "plus", "pro"}
 
 
 class SongZipStoreError(Exception):
@@ -799,6 +800,47 @@ class SongZipStore:
             tier=subscription.get("tier"),
             subscription_id=subscription.get("subscription_id"),
             details={"account_identifier": account_identifier},
+        )
+
+        return {
+            "account": account,
+            "subscription": self.load_subscription(account["account_key"]),
+        }
+
+    def set_account_membership(
+        self,
+        account_identifier: str,
+        tier: str,
+    ) -> Dict[str, Any]:
+        normalized_tier = str(tier or "").strip().lower()
+        if normalized_tier not in SUPPORTED_MEMBERSHIP_TIERS:
+            raise SongZipStoreError("Choose a valid membership tier.")
+
+        account = self.get_account_by_identifier(account_identifier)
+        if account is None:
+            raise SongZipStoreError("No SongZip account matched that email or account key.")
+
+        subscription = self.load_subscription(account["account_key"])
+        previous_tier = str(subscription.get("tier", "free")).strip().lower()
+        subscription["tier"] = normalized_tier
+        subscription["activated_at"] = _timestamp() if normalized_tier != "free" else None
+        subscription["paypal_status"] = (
+            "ADMIN_GRANTED" if normalized_tier != "free" else "ADMIN_CANCELLED"
+        )
+        if normalized_tier == "free":
+            subscription["subscription_id"] = None
+
+        self.save_subscription(account["account_key"], subscription)
+        self.record_subscription_usage_event(
+            account["account_key"],
+            "membership_changed",
+            tier=normalized_tier,
+            subscription_id=subscription.get("subscription_id"),
+            details={
+                "account_identifier": account_identifier,
+                "previous_tier": previous_tier,
+                "new_tier": normalized_tier,
+            },
         )
 
         return {

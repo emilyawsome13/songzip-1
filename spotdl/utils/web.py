@@ -278,6 +278,31 @@ def _get_subscription_limit_for_state(subscription_state: Optional[Dict[str, Any
     return None
 
 
+def _subscription_has_remaining_capacity(
+    subscription_state: Optional[Dict[str, Any]],
+) -> bool:
+    """
+    Determine whether a subscription state can still accept more songs.
+
+    ### Arguments
+    - subscription_state: subscription state payload
+
+    ### Returns
+    - True when the account still has room to download more songs
+    """
+
+    state = subscription_state or {}
+    if str(state.get("tier", "free")).strip().lower() != "free":
+        return True
+
+    limit = _get_subscription_limit_for_state(state)
+    if limit is None:
+        return True
+
+    used = max(0, int(state.get("downloads_used", 0) or 0))
+    return used < limit
+
+
 def _build_subscription_snapshot(
     account_key: str,
     subscription_state: Optional[Dict[str, Any]],
@@ -300,10 +325,16 @@ def _build_subscription_snapshot(
     used = max(0, int(state.get("downloads_used", 0) or 0))
     lifetime_downloads = max(0, int(state.get("downloads_lifetime", 0) or 0))
     remaining = max(0, limit - used) if limit is not None else None
+    tier = str(state.get("tier", "free")).strip().lower()
+    effective_upgrade_prompt = (
+        pending_upgrade_prompt
+        if tier == "free" and not _subscription_has_remaining_capacity(state)
+        else None
+    )
 
     return {
         "account_key": _normalize_account_key(account_key),
-        "tier": str(state.get("tier", "free")).strip().lower(),
+        "tier": tier,
         "downloads_used": used,
         "downloads_lifetime": lifetime_downloads,
         "bonus_credits": max(0, int(state.get("bonus_credits", 0) or 0)),
@@ -313,10 +344,10 @@ def _build_subscription_snapshot(
         "activated_at": state.get("activated_at"),
         "paypal_status": state.get("paypal_status"),
         "upgrade_required": bool(
-            pending_upgrade_prompt and str(state.get("tier", "free")).strip().lower() == "free"
+            effective_upgrade_prompt and tier == "free"
         )
         or (limit is not None and remaining == 0),
-        "upgrade_prompt": pending_upgrade_prompt,
+        "upgrade_prompt": effective_upgrade_prompt,
     }
 
 
@@ -857,7 +888,7 @@ def _assert_admin_account(request: Request) -> Dict[str, Any]:
     if not account.get("is_admin"):
         raise HTTPException(
             status_code=403,
-            detail="Only the SongZip admin account can grant song credits.",
+            detail="Only the SongZip admin account can manage SongZip credits and memberships.",
         )
 
     return account
@@ -1211,6 +1242,7 @@ class Client:
         self.account_key = normalized
         self.pending_upgrade_prompt = None
         self.subscription = self._load_subscription_state()
+        self._reconcile_upgrade_prompt()
 
     def set_authenticated_account(self, account: Optional[Dict[str, Any]]):
         """
@@ -1359,6 +1391,14 @@ class Client:
 
         return _load_subscription_state_for_key(self.account_key)
 
+    def _reconcile_upgrade_prompt(self):
+        """
+        Clear any stale upgrade prompt after account access changes.
+        """
+
+        if _subscription_has_remaining_capacity(self.subscription):
+            self.pending_upgrade_prompt = None
+
     def _save_subscription_state(self):
         """
         Persist the browser session's subscription state.
@@ -1421,6 +1461,7 @@ class Client:
         - subscription state for API consumers
         """
 
+        self._reconcile_upgrade_prompt()
         return _build_subscription_snapshot(
             self.account_key,
             self.subscription,
@@ -1476,6 +1517,7 @@ class Client:
             )
             _save_paypal_subscription_record(subscription_id, record)
 
+        self._reconcile_upgrade_prompt()
         return self.get_subscription_snapshot()
 
     def _reserve_download_capacity(
@@ -2434,6 +2476,15 @@ class AccountCreditGrantRequest(BaseModel):
     credits: int
 
 
+class AccountMembershipGrantRequest(BaseModel):
+    """
+    Admin membership body.
+    """
+
+    account_identifier: str
+    tier: str
+
+
 class SubscriptionActivationRequest(BaseModel):
     """
     Subscription activation body used by the pricing flow.
@@ -2959,6 +3010,43 @@ def grant_account_credits(
     granted_account = _decorate_account(result["account"]) or result["account"]
     if granted_account["account_key"] == client.account_key:
         client.subscription = client._load_subscription_state()
+        client.pending_upgrade_prompt = None
+        subscription = client.get_subscription_snapshot()
+    else:
+        subscription = _build_subscription_snapshot(
+            granted_account["account_key"],
+            result["subscription"],
+        )
+
+    return {
+        "account": granted_account,
+        "subscription": subscription,
+    }
+
+
+@router.post("/api/account/membership", response_model=None)
+def update_account_membership(
+    payload: AccountMembershipGrantRequest,
+    request: Request,
+    client: Client = Depends(get_client),
+) -> Dict[str, Any]:
+    """
+    Grant or cancel a SongZip membership tier for an account.
+    """
+
+    _assert_admin_account(request)
+    try:
+        result = songzip_store.set_account_membership(
+            payload.account_identifier,
+            payload.tier,
+        )
+    except SongZipStoreError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    granted_account = _decorate_account(result["account"]) or result["account"]
+    if granted_account["account_key"] == client.account_key:
+        client.subscription = client._load_subscription_state()
+        client.pending_upgrade_prompt = None
         subscription = client.get_subscription_snapshot()
     else:
         subscription = _build_subscription_snapshot(

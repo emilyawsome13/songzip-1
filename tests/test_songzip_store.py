@@ -133,6 +133,26 @@ class SongZipStoreTest(unittest.TestCase):
         self.assertEqual(events[0]["event_type"], "credits_granted")
         self.assertEqual(events[0]["song_count"], 25)
 
+    def test_set_account_membership_updates_subscription(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            account = store.register_account("member@example.com", "password123")
+
+            upgraded = store.set_account_membership(account["email"], "plus")
+            upgraded_events = store.list_subscription_usage_events(account["account_key"])
+
+            downgraded = store.set_account_membership(account["account_key"], "free")
+            downgraded_events = store.list_subscription_usage_events(account["account_key"])
+
+        self.assertEqual(upgraded["subscription"]["tier"], "plus")
+        self.assertEqual(upgraded["subscription"]["paypal_status"], "ADMIN_GRANTED")
+        self.assertEqual(upgraded_events[0]["event_type"], "membership_changed")
+        self.assertEqual(upgraded_events[0]["details"]["new_tier"], "plus")
+        self.assertEqual(downgraded["subscription"]["tier"], "free")
+        self.assertIsNone(downgraded["subscription"]["subscription_id"])
+        self.assertEqual(downgraded["subscription"]["paypal_status"], "ADMIN_CANCELLED")
+        self.assertEqual(downgraded_events[0]["details"]["new_tier"], "free")
+
 
 if __name__ == "__main__":
     unittest.main()

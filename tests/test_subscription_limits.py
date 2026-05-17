@@ -6,6 +6,7 @@ from unittest.mock import patch
 from spotdl.utils.web import (
     Client,
     FREE_TIER_DOWNLOAD_LIMIT,
+    _build_subscription_snapshot,
     _load_subscription_state_for_key,
     _migrate_subscription_state,
     _sync_subscription_state_from_record,
@@ -77,6 +78,23 @@ class SubscriptionLimitTest(unittest.TestCase):
             client.subscription["downloads_lifetime"],
             FREE_TIER_DOWNLOAD_LIMIT + 3,
         )
+
+    def test_bonus_credits_clear_stale_upgrade_prompt_in_snapshot(self):
+        snapshot = _build_subscription_snapshot(
+            "acct-demo",
+            {
+                "tier": "free",
+                "downloads_used": FREE_TIER_DOWNLOAD_LIMIT,
+                "downloads_lifetime": FREE_TIER_DOWNLOAD_LIMIT,
+                "bonus_credits": 100,
+            },
+            pending_upgrade_prompt={"message": "Upgrade now."},
+        )
+
+        self.assertEqual(snapshot["limit"], FREE_TIER_DOWNLOAD_LIMIT + 100)
+        self.assertEqual(snapshot["remaining"], 100)
+        self.assertFalse(snapshot["upgrade_required"])
+        self.assertIsNone(snapshot["upgrade_prompt"])
 
     def test_subscription_state_persists_for_activation_flow(self):
         with TemporaryDirectory() as temp_dir:

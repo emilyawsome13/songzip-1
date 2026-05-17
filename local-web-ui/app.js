@@ -4,7 +4,7 @@ const CLIENT_STORAGE_KEY = "songzip-client-id";
 const ACCOUNT_STORAGE_KEY = "songzip-account-key";
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MS = 2500;
-const ASSET_VERSION = "v20";
+const ASSET_VERSION = "v21";
 const SOCKET_CONNECT_TIMEOUT_MS = 6000;
 const POLL_REFRESH_MS = 8000;
 const BRAND_NAME = "SongZip";
@@ -36,6 +36,10 @@ const TIER_LABELS = {
   plus: "Plus",
   pro: "Pro",
 };
+
+function getTierLabel(tier) {
+  return TIER_LABELS[String(tier || "free").toLowerCase()] || titleizeKey(tier || "free");
+}
 const scriptLoaders = new Map();
 
 // Settings model copy
@@ -744,9 +748,10 @@ function renderState() {
 
 function renderSubscription(subscription) {
   const tier = String(subscription?.tier || "free").toLowerCase();
-  const tierLabel = TIER_LABELS[tier] || titleizeKey(tier);
+  const tierLabel = getTierLabel(tier);
   const limit = Number(subscription?.limit);
   const used = Number(subscription?.downloads_used || 0);
+  const remaining = Number(subscription?.remaining);
   const lifetimeDownloads = Number(subscription?.downloads_lifetime || 0);
   const bonusCredits = Number(subscription?.bonus_credits || 0);
 
@@ -756,19 +761,25 @@ function renderSubscription(subscription) {
 
   if (els.tierUsage) {
     if (Number.isFinite(limit) && limit > 0) {
-      els.tierUsage.textContent = `${used} / ${limit} songs`;
+      els.tierUsage.textContent = Number.isFinite(remaining)
+        ? `${remaining} left of ${limit}`
+        : `${used} / ${limit} songs`;
     } else if (lifetimeDownloads > 0) {
       els.tierUsage.textContent = `${lifetimeDownloads} songs tracked`;
     } else {
-      els.tierUsage.textContent = "Paid tier active";
+      els.tierUsage.textContent = "Unlimited access";
     }
   }
 
   if (els.tierCredits) {
-    if (bonusCredits > 0) {
-      els.tierCredits.textContent = `${bonusCredits} extra songs`;
+    if (tier !== "free") {
+      els.tierCredits.textContent = bonusCredits > 0
+        ? `${bonusCredits} saved credits`
+        : "Membership active";
+    } else if (bonusCredits > 0) {
+      els.tierCredits.textContent = `+${bonusCredits} song credits`;
     } else {
-      els.tierCredits.textContent = "0 extra songs";
+      els.tierCredits.textContent = "Base 50-song access";
     }
   }
 
@@ -818,7 +829,7 @@ function renderAccountAccess() {
 
   if (els.accountAuthCopy) {
     els.accountAuthCopy.textContent = authenticated
-      ? `Signed in as ${displayName}. This account now owns the tier${isAdmin ? " and can grant song credits." : " and can restore it on other devices."}`
+      ? `Signed in as ${displayName}. This account now carries its SongZip membership, usage history, and credits across devices${isAdmin ? ", and can manage access." : "."}`
       : googleLoginSupported
         ? "Use Google sign-in to carry your tier and SongZip credits across devices without pasting a key every time."
         : "Google sign-in needs localhost or your HTTPS Render domain. On raw LAN IPs, keep using the SongZip account key.";
@@ -846,8 +857,8 @@ function renderAccountAccess() {
 
   if (els.adminCreditsCopy) {
     els.adminCreditsCopy.textContent = isAdmin
-      ? "Grant extra free-tier song credits by account email or SongZip account key."
-      : "Only the SongZip admin account can grant song credits.";
+      ? "Grant song credits or change a membership by account email or SongZip account key."
+      : "Only the SongZip admin account can manage SongZip credits or memberships.";
   }
 }
 
@@ -866,6 +877,9 @@ function syncAdminCreditsPanel(shouldShow) {
     els.adminCreditAmountInput = null;
     els.grantCreditsButton = null;
     els.grantCreditsResult = null;
+    els.adminMembershipTierSelect = null;
+    els.setMembershipButton = null;
+    els.membershipResult = null;
     return;
   }
 
@@ -874,12 +888,12 @@ function syncAdminCreditsPanel(shouldShow) {
       <div class="admin-credits-panel" id="adminCreditsPanel">
         <div class="section-heading compact-heading">
           <div>
-            <p class="eyebrow">Credits</p>
-            <h3>Grant song credits</h3>
+            <p class="eyebrow">Admin</p>
+            <h3>Manage account access</h3>
           </div>
           <span class="status-pill connected">Admin</span>
         </div>
-        <p class="helper-copy" id="adminCreditsCopy">Grant extra free-tier song credits by account email or SongZip account key.</p>
+        <p class="helper-copy" id="adminCreditsCopy">Grant song credits or change a membership by account email or SongZip account key.</p>
         <div class="settings-grid">
           <label class="field">
             <span class="field-label">Account email or key</span>
@@ -903,11 +917,22 @@ function syncAdminCreditsPanel(shouldShow) {
               value="25"
             >
           </label>
+          <label class="field">
+            <span class="field-label">Membership</span>
+            <select id="adminMembershipTierSelect">
+              <option value="basic">Basic membership</option>
+              <option value="plus">Plus membership</option>
+              <option value="pro">Pro membership</option>
+              <option value="free">Cancel membership</option>
+            </select>
+          </label>
         </div>
         <div class="button-row compact-buttons">
           <button class="button button-primary" id="grantCreditsButton" type="button">Grant Credits</button>
+          <button class="button button-secondary" id="setMembershipButton" type="button">Set Basic Membership</button>
         </div>
         <p class="field-help" id="grantCreditsResult">Credits are added on top of the free 50-song allowance for that account.</p>
+        <p class="field-help" id="membershipResult">Membership changes update that account's SongZip access right away. Choosing Free cancels the local membership tier.</p>
       </div>
     `;
 
@@ -917,6 +942,9 @@ function syncAdminCreditsPanel(shouldShow) {
     els.adminCreditAmountInput = document.getElementById("adminCreditAmountInput");
     els.grantCreditsButton = document.getElementById("grantCreditsButton");
     els.grantCreditsResult = document.getElementById("grantCreditsResult");
+    els.adminMembershipTierSelect = document.getElementById("adminMembershipTierSelect");
+    els.setMembershipButton = document.getElementById("setMembershipButton");
+    els.membershipResult = document.getElementById("membershipResult");
 
     bindIfPresent(els.grantCreditsButton, "click", grantSongCredits);
     bindIfPresent(els.adminCreditAmountInput, "keydown", (event) => {
@@ -925,7 +953,22 @@ function syncAdminCreditsPanel(shouldShow) {
         grantSongCredits();
       }
     });
+    bindIfPresent(els.setMembershipButton, "click", setAccountMembership);
+    bindIfPresent(els.adminMembershipTierSelect, "change", syncMembershipButtonLabel);
   }
+
+  syncMembershipButtonLabel();
+}
+
+function syncMembershipButtonLabel() {
+  if (!els.setMembershipButton || !els.adminMembershipTierSelect) {
+    return;
+  }
+
+  const selectedTier = String(els.adminMembershipTierSelect.value || "basic").toLowerCase();
+  els.setMembershipButton.textContent = selectedTier === "free"
+    ? "Cancel Membership"
+    : `Set ${getTierLabel(selectedTier)} Membership`;
 }
 
 function isGoogleLoginSupportedHere() {
@@ -968,6 +1011,16 @@ function closeUpgradePrompt() {
       }
     }, 180);
   }
+}
+
+function clearUpgradeStateIfUnlocked() {
+  const subscription = state.session?.subscription || {};
+  if (subscription.upgrade_required) {
+    return;
+  }
+
+  state.lastUpgradePromptKey = null;
+  closeUpgradePrompt();
 }
 
 async function copyAccountKey() {
@@ -1057,14 +1110,12 @@ async function grantSongCredits() {
       }),
     });
 
-    if (response?.subscription && response.account?.account_key === state.accountKey) {
-      state.session = state.session || {};
-      state.session.subscription = response.subscription;
-    } else {
-      await loadSessionState();
-    }
-
+    await Promise.all([loadSessionState(), loadAccountMe(), loadAuthProviders()]);
     renderState();
+    renderAccountIdentity();
+    renderAccountAccess();
+    renderAuthProviders();
+    clearUpgradeStateIfUnlocked();
 
     const grantedAccount = response?.account?.email || response?.account?.account_key || accountIdentifier;
     const totalCredits = Number(response?.subscription?.bonus_credits || 0);
@@ -1078,10 +1129,6 @@ async function grantSongCredits() {
     }
 
     els.adminCreditTargetInput.value = "";
-    await Promise.all([loadAccountMe(), loadAuthProviders()]);
-    renderAccountIdentity();
-    renderAccountAccess();
-    renderAuthProviders();
     showBanner("success", resultMessage);
   } catch (error) {
     console.error(error);
@@ -1091,6 +1138,61 @@ async function grantSongCredits() {
     showBanner("error", `Could not grant song credits: ${error.message}`);
   } finally {
     setBusy(els.grantCreditsButton, false);
+  }
+}
+
+async function setAccountMembership() {
+  const accountIdentifier = String(els.adminCreditTargetInput?.value || "").trim();
+  const tier = String(els.adminMembershipTierSelect?.value || "").trim().toLowerCase();
+
+  if (!accountIdentifier) {
+    showBanner("error", "Enter an account email or SongZip key first.");
+    return;
+  }
+
+  if (!tier) {
+    showBanner("error", "Choose a membership tier first.");
+    return;
+  }
+
+  try {
+    setBusy(els.setMembershipButton, true);
+    const response = await api(withClient("/api/account/membership"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account_identifier: accountIdentifier,
+        tier,
+      }),
+    });
+
+    await Promise.all([loadSessionState(), loadAccountMe(), loadAuthProviders()]);
+    renderState();
+    renderAccountIdentity();
+    renderAccountAccess();
+    renderAuthProviders();
+    clearUpgradeStateIfUnlocked();
+
+    const targetAccount = response?.account?.email || response?.account?.account_key || accountIdentifier;
+    const membershipLabel = getTierLabel(tier);
+    const resultMessage = tier === "free"
+      ? `Cancelled the local paid membership for ${targetAccount}.`
+      : `Set ${membershipLabel} membership for ${targetAccount}.`;
+
+    if (els.membershipResult) {
+      els.membershipResult.textContent = resultMessage;
+    }
+
+    els.adminCreditTargetInput.value = "";
+    showBanner("success", resultMessage);
+  } catch (error) {
+    console.error(error);
+    if (els.membershipResult) {
+      els.membershipResult.textContent = error.message;
+    }
+    showBanner("error", `Could not update the membership: ${error.message}`);
+  } finally {
+    setBusy(els.setMembershipButton, false);
   }
 }
 
@@ -1667,6 +1769,41 @@ function collectSettingsPayload() {
   return payload;
 }
 
+async function shouldBlockDownloadForUpgrade() {
+  const subscription = state.session?.subscription || {};
+  if (
+    String(subscription.tier || "free").toLowerCase() !== "free"
+    || Number(subscription.remaining) !== 0
+  ) {
+    return false;
+  }
+
+  try {
+    await loadSessionState();
+    renderState();
+    clearUpgradeStateIfUnlocked();
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+
+  const refreshed = state.session?.subscription || {};
+  if (
+    String(refreshed.tier || "free").toLowerCase() === "free"
+    && Number(refreshed.remaining) === 0
+  ) {
+    openUpgradePrompt(
+      refreshed.upgrade_prompt || {
+        message: "Free tier limit reached. Upgrade to keep downloading songs.",
+      }
+    );
+    showBanner("error", "Free tier limit reached. Upgrade to continue.");
+    return true;
+  }
+
+  return false;
+}
+
 async function submitDownloadQuery(event) {
   event.preventDefault();
   const query = els.queryInput.value.trim();
@@ -1675,17 +1812,7 @@ async function submitDownloadQuery(event) {
     return;
   }
 
-  const subscription = state.session?.subscription || {};
-  if (
-    String(subscription.tier || "free").toLowerCase() === "free"
-    && Number(subscription.remaining) === 0
-  ) {
-    openUpgradePrompt(
-      subscription.upgrade_prompt || {
-        message: "Free tier limit reached. Upgrade to keep downloading songs.",
-      }
-    );
-    showBanner("error", "Free tier limit reached. Upgrade to continue.");
+  if (await shouldBlockDownloadForUpgrade()) {
     return;
   }
 
