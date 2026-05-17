@@ -2638,7 +2638,14 @@ def account_google_start(
     if not resolved_client_id:
         raise HTTPException(status_code=400, detail="SongZip client_id is required.")
 
-    client_config = _google_login_client_config(request)
+    try:
+        client_config = _google_login_client_config(request)
+    except HTTPException as error:
+        return RedirectResponse(
+            url=_build_google_login_redirect_back(request, "error", str(error.detail)),
+            status_code=303,
+        )
+
     _prune_google_account_states()
     state_token = secrets.token_urlsafe(24)
     _pending_google_account_states[state_token] = {

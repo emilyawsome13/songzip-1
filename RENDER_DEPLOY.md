@@ -25,6 +25,10 @@ This repository now includes a Render Blueprint in `render.yaml` and a Docker-ba
    - `SPOTDL_GOOGLE_OAUTH_CLIENT_ID`
    - `SPOTDL_GOOGLE_OAUTH_CLIENT_SECRET`
    - `SPOTDL_GOOGLE_OAUTH_REDIRECT_URI`
+   - `SONGZIP_GOOGLE_LOGIN_CLIENT_ID`
+   - `SONGZIP_GOOGLE_LOGIN_CLIENT_SECRET`
+   - `SONGZIP_GOOGLE_LOGIN_REDIRECT_URI`
+   - `SONGZIP_ADMIN_EMAIL`
    - `SONGZIP_PAYPAL_CLIENT_ID`
    - `SONGZIP_PAYPAL_CLIENT_SECRET`
    - `SONGZIP_PAYPAL_WEBHOOK_ID`
@@ -35,3 +39,4 @@ This repository now includes a Render Blueprint in `render.yaml` and a Docker-ba
 - Render web services need to listen on `0.0.0.0` and the Render-provided `PORT`.
 - Render filesystems are ephemeral unless you attach a persistent disk, so the disk is important for SongZip state.
 - Attached disks require a paid web service plan on Render.
+- Google sign-in for SongZip accounts uses `openid email profile` and needs an authorized redirect URI that exactly matches your deployed callback URL.
