@@ -19,9 +19,11 @@ class SubscriptionLimitTest(unittest.TestCase):
         client.subscription = {
             "tier": "free",
             "downloads_used": FREE_TIER_DOWNLOAD_LIMIT - 2,
+            "downloads_lifetime": FREE_TIER_DOWNLOAD_LIMIT - 2,
         }
         client.pending_upgrade_prompt = None
         client._save_subscription_state = lambda: None  # type: ignore[method-assign]
+        client._record_subscription_event = lambda *args, **kwargs: None  # type: ignore[method-assign]
 
         songs = ["one", "two", "three", "four"]
         allowed, overflow = client._reserve_download_capacity(songs)  # pylint: disable=protected-access
@@ -36,9 +38,12 @@ class SubscriptionLimitTest(unittest.TestCase):
         client.subscription = {
             "tier": "basic",
             "downloads_used": 0,
+            "downloads_lifetime": 0,
+            "subscription_id": "sub_paid",
         }
         client.pending_upgrade_prompt = None
         client._save_subscription_state = lambda: None  # type: ignore[method-assign]
+        client._record_subscription_event = lambda *args, **kwargs: None  # type: ignore[method-assign]
 
         songs = ["one", "two", "three"]
         allowed, overflow = client._reserve_download_capacity(songs)  # pylint: disable=protected-access
@@ -46,16 +51,19 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(allowed, songs)
         self.assertEqual(overflow, 0)
         self.assertIsNone(client.pending_upgrade_prompt)
+        self.assertEqual(client.subscription["downloads_lifetime"], 3)
 
     def test_free_tier_bonus_credits_extend_limit(self):
         client = Client.__new__(Client)
         client.subscription = {
             "tier": "free",
             "downloads_used": FREE_TIER_DOWNLOAD_LIMIT,
+            "downloads_lifetime": FREE_TIER_DOWNLOAD_LIMIT,
             "bonus_credits": 3,
         }
         client.pending_upgrade_prompt = None
         client._save_subscription_state = lambda: None  # type: ignore[method-assign]
+        client._record_subscription_event = lambda *args, **kwargs: None  # type: ignore[method-assign]
 
         allowed, overflow = client._reserve_download_capacity(["one", "two", "three", "four"])  # pylint: disable=protected-access
 
@@ -63,6 +71,10 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(overflow, 1)
         self.assertEqual(
             client.subscription["downloads_used"],
+            FREE_TIER_DOWNLOAD_LIMIT + 3,
+        )
+        self.assertEqual(
+            client.subscription["downloads_lifetime"],
             FREE_TIER_DOWNLOAD_LIMIT + 3,
         )
 
@@ -75,6 +87,7 @@ class SubscriptionLimitTest(unittest.TestCase):
             client.subscription = {
                 "tier": "basic",
                 "downloads_used": 12,
+                "downloads_lifetime": 34,
                 "subscription_id": "sub_123",
                 "activated_at": "2026-05-16T00:00:00-05:00",
                 "paypal_status": "LOCAL_APPROVED",
@@ -87,6 +100,7 @@ class SubscriptionLimitTest(unittest.TestCase):
 
         self.assertEqual(loaded["tier"], "basic")
         self.assertEqual(loaded["downloads_used"], 12)
+        self.assertEqual(loaded["downloads_lifetime"], 34)
         self.assertEqual(loaded["subscription_id"], "sub_123")
 
     def test_paypal_record_sync_downgrades_cancelled_account_to_free(self):
@@ -115,6 +129,7 @@ class SubscriptionLimitTest(unittest.TestCase):
                     {
                         "tier": "plus",
                         "downloads_used": 18,
+                        "downloads_lifetime": 26,
                         "subscription_id": "sub_live",
                         "activated_at": "2026-05-16T08:00:00-05:00",
                         "paypal_status": "ACTIVE",
@@ -125,6 +140,7 @@ class SubscriptionLimitTest(unittest.TestCase):
                     {
                         "tier": "free",
                         "downloads_used": 0,
+                        "downloads_lifetime": 7,
                         "subscription_id": None,
                         "activated_at": None,
                         "paypal_status": None,
@@ -148,6 +164,7 @@ class SubscriptionLimitTest(unittest.TestCase):
 
         self.assertEqual(migrated["tier"], "plus")
         self.assertEqual(migrated["downloads_used"], 18)
+        self.assertEqual(migrated["downloads_lifetime"], 33)
         self.assertEqual(migrated["subscription_id"], "sub_live")
         self.assertEqual(guest_after["tier"], "free")
         self.assertEqual(record["account_key"], "acct-user")

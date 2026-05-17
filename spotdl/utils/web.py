@@ -251,6 +251,7 @@ def _default_subscription_state() -> Dict[str, Any]:
     return {
         "tier": "free",
         "downloads_used": 0,
+        "downloads_lifetime": 0,
         "bonus_credits": 0,
         "subscription_id": None,
         "activated_at": None,
@@ -297,12 +298,14 @@ def _build_subscription_snapshot(
     state = dict(subscription_state or _default_subscription_state())
     limit = _get_subscription_limit_for_state(state)
     used = max(0, int(state.get("downloads_used", 0) or 0))
+    lifetime_downloads = max(0, int(state.get("downloads_lifetime", 0) or 0))
     remaining = max(0, limit - used) if limit is not None else None
 
     return {
         "account_key": _normalize_account_key(account_key),
         "tier": str(state.get("tier", "free")).strip().lower(),
         "downloads_used": used,
+        "downloads_lifetime": lifetime_downloads,
         "bonus_credits": max(0, int(state.get("bonus_credits", 0) or 0)),
         "limit": limit,
         "remaining": remaining,
@@ -376,6 +379,9 @@ def _subscription_state_has_usage_or_payment(state: Optional[Dict[str, Any]]) ->
         return True
 
     if int(state.get("downloads_used", 0) or 0) > 0:
+        return True
+
+    if int(state.get("downloads_lifetime", 0) or 0) > 0:
         return True
 
     if int(state.get("bonus_credits", 0) or 0) > 0:
@@ -461,6 +467,9 @@ def _migrate_subscription_state(source_key: str, target_key: str) -> Dict[str, A
         int(target_state.get("downloads_used", 0) or 0),
         int(source_state.get("downloads_used", 0) or 0),
     )
+    merged_state["downloads_lifetime"] = int(
+        target_state.get("downloads_lifetime", 0) or 0
+    ) + int(source_state.get("downloads_lifetime", 0) or 0)
     merged_state["bonus_credits"] = int(target_state.get("bonus_credits", 0) or 0) + int(
         source_state.get("bonus_credits", 0) or 0
     )
@@ -483,6 +492,20 @@ def _migrate_subscription_state(source_key: str, target_key: str) -> Dict[str, A
         )
 
     _save_subscription_state_for_key(normalized_target, merged_state)
+    try:
+        songzip_store.record_subscription_usage_event(
+            normalized_target,
+            "subscription_migrated",
+            details={
+                "source_account_key": normalized_source,
+                "target_account_key": normalized_target,
+            },
+        )
+    except (OSError, SongZipStoreError):
+        app_state.logger.debug(
+            "Could not save subscription migration event for %s",
+            normalized_target,
+        )
 
     subscription_id = source_state.get("subscription_id")
     if subscription_id:
@@ -536,6 +559,22 @@ def _sync_subscription_state_from_record(record: Dict[str, Any]):
         state["activated_at"] = None
 
     _save_subscription_state_for_key(account_key, state)
+    try:
+        songzip_store.record_subscription_usage_event(
+            account_key,
+            "paypal_subscription_sync",
+            tier=state.get("tier"),
+            subscription_id=record.get("subscription_id"),
+            details={
+                "status": status,
+                "plan_id": record.get("plan_id"),
+            },
+        )
+    except (OSError, SongZipStoreError):
+        app_state.logger.debug(
+            "Could not save PayPal sync event for %s",
+            account_key,
+        )
 
 
 def _paypal_api_base() -> str:
@@ -1333,6 +1372,37 @@ class Client:
                 self.account_key,
             )
 
+    def _record_subscription_event(
+        self,
+        event_type: str,
+        song_count: int = 0,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Persist a subscription usage event for auditing and recovery.
+
+        ### Arguments
+        - event_type: event kind
+        - song_count: song delta for the event
+        - details: optional event metadata
+        """
+
+        try:
+            songzip_store.record_subscription_usage_event(
+                self.account_key,
+                event_type,
+                song_count=song_count,
+                tier=str(self.subscription.get("tier", "free")).strip().lower(),
+                subscription_id=self.subscription.get("subscription_id"),
+                details=details,
+            )
+        except (OSError, SongZipStoreError):
+            app_state.logger.debug(
+                "Could not save subscription usage event %s for %s",
+                event_type,
+                self.account_key,
+            )
+
     def _get_subscription_limit(self) -> Optional[int]:
         """
         Get the download cap for the active tier.
@@ -1385,6 +1455,13 @@ class Client:
         )
         self.pending_upgrade_prompt = None
         self._save_subscription_state()
+        self._record_subscription_event(
+            "subscription_activated",
+            details={
+                "tier": normalized_tier,
+                "paypal_status": self.subscription["paypal_status"],
+            },
+        )
         if subscription_id:
             record = _load_paypal_subscription_record(subscription_id) or {}
             record.update(
@@ -1417,6 +1494,17 @@ class Client:
 
         self.pending_upgrade_prompt = None
         if self.subscription.get("tier") != "free":
+            allowed_count = len(songs)
+            if allowed_count > 0:
+                self.subscription["downloads_lifetime"] = int(
+                    self.subscription.get("downloads_lifetime", 0) or 0
+                ) + allowed_count
+                self._save_subscription_state()
+                self._record_subscription_event(
+                    "songs_downloaded",
+                    song_count=allowed_count,
+                    details={"mode": "paid"},
+                )
             return songs, 0
 
         used = int(self.subscription.get("downloads_used", 0))
@@ -1439,7 +1527,16 @@ class Client:
         allowed = songs[:remaining]
         overflow_count = max(0, requested - len(allowed))
         self.subscription["downloads_used"] = used + len(allowed)
+        self.subscription["downloads_lifetime"] = int(
+            self.subscription.get("downloads_lifetime", 0) or 0
+        ) + len(allowed)
         self._save_subscription_state()
+        if allowed:
+            self._record_subscription_event(
+                "songs_downloaded",
+                song_count=len(allowed),
+                details={"mode": "free", "overflow_count": overflow_count},
+            )
 
         if overflow_count > 0 or self.subscription["downloads_used"] >= limit:
             self.pending_upgrade_prompt = {

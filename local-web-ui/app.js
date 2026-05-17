@@ -4,7 +4,7 @@ const CLIENT_STORAGE_KEY = "songzip-client-id";
 const ACCOUNT_STORAGE_KEY = "songzip-account-key";
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MS = 2500;
-const ASSET_VERSION = "v19";
+const ASSET_VERSION = "v20";
 const SOCKET_CONNECT_TIMEOUT_MS = 6000;
 const POLL_REFRESH_MS = 8000;
 const BRAND_NAME = "SongZip";
@@ -747,6 +747,7 @@ function renderSubscription(subscription) {
   const tierLabel = TIER_LABELS[tier] || titleizeKey(tier);
   const limit = Number(subscription?.limit);
   const used = Number(subscription?.downloads_used || 0);
+  const lifetimeDownloads = Number(subscription?.downloads_lifetime || 0);
   const bonusCredits = Number(subscription?.bonus_credits || 0);
 
   if (els.tierName) {
@@ -756,6 +757,8 @@ function renderSubscription(subscription) {
   if (els.tierUsage) {
     if (Number.isFinite(limit) && limit > 0) {
       els.tierUsage.textContent = `${used} / ${limit} songs`;
+    } else if (lifetimeDownloads > 0) {
+      els.tierUsage.textContent = `${lifetimeDownloads} songs tracked`;
     } else {
       els.tierUsage.textContent = "Paid tier active";
     }

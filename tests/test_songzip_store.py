@@ -54,6 +54,7 @@ class SongZipStoreTest(unittest.TestCase):
                 {
                     "tier": "plus",
                     "downloads_used": 12,
+                    "downloads_lifetime": 44,
                     "subscription_id": "sub_123",
                     "activated_at": "2026-05-16T07:00:00-05:00",
                     "paypal_status": "ACTIVE",
@@ -62,6 +63,7 @@ class SongZipStoreTest(unittest.TestCase):
             subscription = store.load_subscription("acct-demo")
             self.assertEqual(subscription["tier"], "plus")
             self.assertEqual(subscription["downloads_used"], 12)
+            self.assertEqual(subscription["downloads_lifetime"], 44)
 
             store.save_paypal_subscription(
                 "sub_123",
@@ -123,10 +125,13 @@ class SongZipStoreTest(unittest.TestCase):
             stored_bonus_credits = store.load_subscription(account["account_key"])[
                 "bonus_credits"
             ]
+            events = store.list_subscription_usage_events(account["account_key"])
 
         self.assertEqual(result["account"]["account_key"], account["account_key"])
         self.assertEqual(result["subscription"]["bonus_credits"], 25)
         self.assertEqual(stored_bonus_credits, 25)
+        self.assertEqual(events[0]["event_type"], "credits_granted")
+        self.assertEqual(events[0]["song_count"], 25)
 
 
 if __name__ == "__main__":

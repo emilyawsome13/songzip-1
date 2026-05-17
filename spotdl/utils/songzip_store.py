@@ -163,6 +163,7 @@ class SongZipStore:
                     account_key TEXT PRIMARY KEY,
                     tier TEXT NOT NULL,
                     downloads_used INTEGER NOT NULL,
+                    downloads_lifetime INTEGER NOT NULL DEFAULT 0,
                     subscription_id TEXT,
                     activated_at TEXT,
                     paypal_status TEXT,
@@ -185,6 +186,17 @@ class SongZipStore:
                     value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS subscription_usage_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_key TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    song_count INTEGER NOT NULL DEFAULT 0,
+                    tier TEXT,
+                    subscription_id TEXT,
+                    details_json TEXT,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(
@@ -201,11 +213,23 @@ class SongZipStore:
                 "bonus_credits",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            self._ensure_column(
+                connection,
+                "subscriptions",
+                "downloads_lifetime",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_provider_subject
                 ON accounts(provider_subject)
                 WHERE provider_subject IS NOT NULL
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_subscription_usage_events_account_created
+                ON subscription_usage_events(account_key, created_at DESC)
                 """
             )
 
@@ -595,6 +619,7 @@ class SongZipStore:
         default_state = {
             "tier": "free",
             "downloads_used": 0,
+            "downloads_lifetime": 0,
             "bonus_credits": 0,
             "subscription_id": None,
             "activated_at": None,
@@ -615,6 +640,7 @@ class SongZipStore:
             {
                 "tier": row["tier"],
                 "downloads_used": int(row["downloads_used"] or 0),
+                "downloads_lifetime": int(row["downloads_lifetime"] or 0),
                 "bonus_credits": int(row["bonus_credits"] or 0),
                 "subscription_id": row["subscription_id"],
                 "activated_at": row["activated_at"],
@@ -634,16 +660,18 @@ class SongZipStore:
                     account_key,
                     tier,
                     downloads_used,
+                    downloads_lifetime,
                     bonus_credits,
                     subscription_id,
                     activated_at,
                     paypal_status,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_key) DO UPDATE SET
                     tier = excluded.tier,
                     downloads_used = excluded.downloads_used,
+                    downloads_lifetime = excluded.downloads_lifetime,
                     bonus_credits = excluded.bonus_credits,
                     subscription_id = excluded.subscription_id,
                     activated_at = excluded.activated_at,
@@ -654,6 +682,7 @@ class SongZipStore:
                     normalized_key,
                     state.get("tier", "free"),
                     int(state.get("downloads_used", 0) or 0),
+                    int(state.get("downloads_lifetime", 0) or 0),
                     int(state.get("bonus_credits", 0) or 0),
                     state.get("subscription_id"),
                     state.get("activated_at"),
@@ -661,6 +690,91 @@ class SongZipStore:
                     updated_at,
                 ),
             )
+
+    def record_subscription_usage_event(
+        self,
+        account_key: str,
+        event_type: str,
+        song_count: int = 0,
+        tier: Optional[str] = None,
+        subscription_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        normalized_key = _normalize_account_key(account_key)
+        if not normalized_key:
+            raise SongZipStoreError("Cannot store usage for an invalid SongZip account key.")
+
+        resolved_event_type = str(event_type or "").strip().lower()
+        if not resolved_event_type:
+            raise SongZipStoreError("Usage event type is required.")
+
+        payload = json.dumps(details) if isinstance(details, dict) else None
+        with self._managed_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO subscription_usage_events (
+                    account_key,
+                    event_type,
+                    song_count,
+                    tier,
+                    subscription_id,
+                    details_json,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_key,
+                    resolved_event_type,
+                    int(song_count or 0),
+                    tier,
+                    subscription_id,
+                    payload,
+                    _timestamp(),
+                ),
+            )
+
+    def list_subscription_usage_events(
+        self,
+        account_key: str,
+        limit: int = 50,
+    ) -> list[Dict[str, Any]]:
+        normalized_key = _normalize_account_key(account_key)
+        resolved_limit = max(1, min(int(limit or 50), 250))
+        with self._managed_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT account_key, event_type, song_count, tier, subscription_id, details_json, created_at
+                FROM subscription_usage_events
+                WHERE account_key = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (normalized_key, resolved_limit),
+            ).fetchall()
+
+        events: list[Dict[str, Any]] = []
+        for row in rows:
+            details = None
+            if row["details_json"]:
+                try:
+                    details = json.loads(row["details_json"])
+                except ValueError:
+                    details = None
+
+            events.append(
+                {
+                    "account_key": row["account_key"],
+                    "event_type": row["event_type"],
+                    "song_count": int(row["song_count"] or 0),
+                    "tier": row["tier"],
+                    "subscription_id": row["subscription_id"],
+                    "details": details,
+                    "created_at": row["created_at"],
+                }
+            )
+
+        return events
 
     def grant_bonus_credits(
         self,
@@ -678,6 +792,14 @@ class SongZipStore:
         subscription = self.load_subscription(account["account_key"])
         subscription["bonus_credits"] = int(subscription.get("bonus_credits", 0) or 0) + resolved_credits
         self.save_subscription(account["account_key"], subscription)
+        self.record_subscription_usage_event(
+            account["account_key"],
+            "credits_granted",
+            song_count=resolved_credits,
+            tier=subscription.get("tier"),
+            subscription_id=subscription.get("subscription_id"),
+            details={"account_identifier": account_identifier},
+        )
 
         return {
             "account": account,
