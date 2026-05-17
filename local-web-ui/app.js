@@ -4,7 +4,7 @@ const CLIENT_STORAGE_KEY = "songzip-client-id";
 const ACCOUNT_STORAGE_KEY = "songzip-account-key";
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MS = 2500;
-const ASSET_VERSION = "v18";
+const ASSET_VERSION = "v19";
 const SOCKET_CONNECT_TIMEOUT_MS = 6000;
 const POLL_REFRESH_MS = 8000;
 const BRAND_NAME = "SongZip";
@@ -300,12 +300,13 @@ function cacheElements() {
     accountAuthCopy: document.getElementById("accountAuthCopy"),
     accountGoogleLoginButton: document.getElementById("accountGoogleLoginButton"),
     accountLogoutButton: document.getElementById("accountLogoutButton"),
-    adminCreditsPanel: document.getElementById("adminCreditsPanel"),
-    adminCreditsCopy: document.getElementById("adminCreditsCopy"),
-    adminCreditTargetInput: document.getElementById("adminCreditTargetInput"),
-    adminCreditAmountInput: document.getElementById("adminCreditAmountInput"),
-    grantCreditsButton: document.getElementById("grantCreditsButton"),
-    grantCreditsResult: document.getElementById("grantCreditsResult"),
+    adminCreditsMount: document.getElementById("adminCreditsMount"),
+    adminCreditsPanel: null,
+    adminCreditsCopy: null,
+    adminCreditTargetInput: null,
+    adminCreditAmountInput: null,
+    grantCreditsButton: null,
+    grantCreditsResult: null,
     songList: document.getElementById("songList"),
     downloadsList: document.getElementById("downloadsList"),
     downloadAdvice: document.getElementById("downloadAdvice"),
@@ -343,17 +344,10 @@ function bindEvents() {
   bindIfPresent(els.useAccountKeyButton, "click", applyAccountKey);
   bindIfPresent(els.accountGoogleLoginButton, "click", startGoogleLogin);
   bindIfPresent(els.accountLogoutButton, "click", logoutAccount);
-  bindIfPresent(els.grantCreditsButton, "click", grantSongCredits);
   bindIfPresent(els.accountKeyInput, "keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       applyAccountKey();
-    }
-  });
-  bindIfPresent(els.adminCreditAmountInput, "keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      grantSongCredits();
     }
   });
   bindIfPresent(els.upgradeNowButton, "click", () => {
@@ -811,6 +805,8 @@ function renderAccountAccess() {
   const isAdmin = Boolean(state.account?.account?.is_admin);
   const googleLoginSupported = isGoogleLoginSupportedHere();
 
+  syncAdminCreditsPanel(authenticated && isAdmin);
+
   if (els.accountAuthStatus) {
     els.accountAuthStatus.textContent = authenticated ? (isAdmin ? "Admin" : "Signed In") : "Guest";
     els.accountAuthStatus.className = "status-pill";
@@ -845,14 +841,87 @@ function renderAccountAccess() {
     els.useAccountKeyButton.hidden = authenticated;
   }
 
-  if (els.adminCreditsPanel) {
-    els.adminCreditsPanel.hidden = !authenticated || !isAdmin;
-  }
-
   if (els.adminCreditsCopy) {
     els.adminCreditsCopy.textContent = isAdmin
       ? "Grant extra free-tier song credits by account email or SongZip account key."
       : "Only the SongZip admin account can grant song credits.";
+  }
+}
+
+function syncAdminCreditsPanel(shouldShow) {
+  if (!els.adminCreditsMount) {
+    return;
+  }
+
+  if (!shouldShow) {
+    if (els.adminCreditsMount.innerHTML !== "") {
+      els.adminCreditsMount.innerHTML = "";
+    }
+    els.adminCreditsPanel = null;
+    els.adminCreditsCopy = null;
+    els.adminCreditTargetInput = null;
+    els.adminCreditAmountInput = null;
+    els.grantCreditsButton = null;
+    els.grantCreditsResult = null;
+    return;
+  }
+
+  if (!els.adminCreditsPanel) {
+    els.adminCreditsMount.innerHTML = `
+      <div class="admin-credits-panel" id="adminCreditsPanel">
+        <div class="section-heading compact-heading">
+          <div>
+            <p class="eyebrow">Credits</p>
+            <h3>Grant song credits</h3>
+          </div>
+          <span class="status-pill connected">Admin</span>
+        </div>
+        <p class="helper-copy" id="adminCreditsCopy">Grant extra free-tier song credits by account email or SongZip account key.</p>
+        <div class="settings-grid">
+          <label class="field">
+            <span class="field-label">Account email or key</span>
+            <input
+              id="adminCreditTargetInput"
+              type="text"
+              inputmode="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="user@example.com or acct-demo"
+            >
+          </label>
+          <label class="field">
+            <span class="field-label">Song credits</span>
+            <input
+              id="adminCreditAmountInput"
+              type="number"
+              inputmode="numeric"
+              min="1"
+              step="1"
+              value="25"
+            >
+          </label>
+        </div>
+        <div class="button-row compact-buttons">
+          <button class="button button-primary" id="grantCreditsButton" type="button">Grant Credits</button>
+        </div>
+        <p class="field-help" id="grantCreditsResult">Credits are added on top of the free 50-song allowance for that account.</p>
+      </div>
+    `;
+
+    els.adminCreditsPanel = document.getElementById("adminCreditsPanel");
+    els.adminCreditsCopy = document.getElementById("adminCreditsCopy");
+    els.adminCreditTargetInput = document.getElementById("adminCreditTargetInput");
+    els.adminCreditAmountInput = document.getElementById("adminCreditAmountInput");
+    els.grantCreditsButton = document.getElementById("grantCreditsButton");
+    els.grantCreditsResult = document.getElementById("grantCreditsResult");
+
+    bindIfPresent(els.grantCreditsButton, "click", grantSongCredits);
+    bindIfPresent(els.adminCreditAmountInput, "keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        grantSongCredits();
+      }
+    });
   }
 }
 
