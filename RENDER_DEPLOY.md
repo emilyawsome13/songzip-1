@@ -40,3 +40,4 @@ This repository now includes a Render Blueprint in `render.yaml` and a Docker-ba
 - Render filesystems are ephemeral unless you attach a persistent disk, so the disk is important for SongZip state.
 - Attached disks require a paid web service plan on Render.
 - Google sign-in for SongZip accounts uses `openid email profile` and needs an authorized redirect URI that exactly matches your deployed callback URL.
+- The admin credits panel stays disabled unless `SONGZIP_ADMIN_EMAIL` is set and the signed-in Google account matches it exactly.

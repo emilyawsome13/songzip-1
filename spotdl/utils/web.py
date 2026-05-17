@@ -781,15 +781,9 @@ def _decorate_account(account: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
 
     decorated = dict(account)
     admin_email = _configured_admin_email()
-    if admin_email:
-        decorated["is_admin"] = bool(
-            _normalize_email_address(account.get("email")) == admin_email
-        )
-        return decorated
-
-    admin_account_key = songzip_store.get_admin_account_key()
     decorated["is_admin"] = bool(
-        admin_account_key and account.get("account_key") == admin_account_key
+        admin_email
+        and _normalize_email_address(account.get("email")) == admin_email
     )
     return decorated
 
@@ -813,13 +807,6 @@ def _resolve_authenticated_account(request: Optional[Request]) -> Optional[Dict[
 
 
 def _claim_google_admin_if_needed(account: Dict[str, Any]) -> Dict[str, Any]:
-    admin_email = _configured_admin_email()
-    if admin_email:
-        return _decorate_account(account) or account
-
-    if not songzip_store.get_admin_account_key():
-        songzip_store.claim_admin_account(account["account_key"])
-
     return _decorate_account(account) or account
 
 

@@ -134,6 +134,21 @@ class ClientInitErrorTest(unittest.TestCase):
 
         self.assertTrue(decorated["is_admin"])
 
+    def test_admin_access_is_disabled_when_admin_email_is_not_configured(self):
+        account = {
+            "email": "gmelchorcrazy13@gmail.com",
+            "account_key": "acct-admin-key",
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_ADMIN_EMAIL": ""},
+            clear=False,
+        ), patch("spotdl.utils.web.songzip_store.get_admin_account_key", return_value="acct-admin-key"):
+            decorated = _decorate_account(account)
+
+        self.assertFalse(decorated["is_admin"])
+
 
 if __name__ == "__main__":
     unittest.main()
