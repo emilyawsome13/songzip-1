@@ -786,7 +786,7 @@ class SPAStaticFiles(StaticFiles):
             response = await super().get_response(".", scope)
 
         response.headers.setdefault(
-            "Cache-Control", "max-age=0, no-cache, no-store, , must-revalidate"
+            "Cache-Control", "no-store, no-cache, max-age=0, must-revalidate"
         )
         response.headers.setdefault("Pragma", "no-cache")
         response.headers.setdefault("Expires", "0")

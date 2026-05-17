@@ -1,8 +1,10 @@
+window.__songzipFrontendLoaded = true;
+
 const CLIENT_STORAGE_KEY = "songzip-client-id";
 const ACCOUNT_STORAGE_KEY = "songzip-account-key";
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MS = 2500;
-const ASSET_VERSION = "v15";
+const ASSET_VERSION = "v16";
 const SOCKET_CONNECT_TIMEOUT_MS = 6000;
 const POLL_REFRESH_MS = 8000;
 const BRAND_NAME = "SongZip";
@@ -409,6 +411,12 @@ async function boot() {
     }),
   ]);
   renderAll();
+  window.__songzipBooted = true;
+  try {
+    window.sessionStorage.removeItem("songzip-cache-heal");
+  } catch (_error) {
+    // Ignore storage issues in privacy-restricted browsers.
+  }
   setConnectionStatus("ready");
   if (!state.pendingBanner) {
     showBanner("success", `${BRAND_NAME} is ready.`);

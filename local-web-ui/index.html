@@ -9,9 +9,9 @@
     content="Queue multiple links, connect your own accounts, and save flat MP3 bundles in one cleaner SongZip workflow."
   >
   <meta name="theme-color" content="#08111a">
-  <link rel="manifest" href="/manifest.webmanifest?v15">
-  <link rel="icon" href="/icon.svg?v15" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css?v15">
+  <link rel="manifest" href="/manifest.webmanifest?v16">
+  <link rel="icon" href="/icon.svg?v16" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v16">
 </head>
 <body>
   <div class="ambient ambient-one" aria-hidden="true"></div>
@@ -28,7 +28,7 @@
       <div class="topbar-actions">
         <div class="connection-pill">
           <span class="connection-dot" id="connectionDot"></span>
-          <span id="connectionStatus">Connecting</span>
+          <span id="connectionStatus">Loading</span>
         </div>
         <button class="button button-secondary" id="refreshStateButton" type="button">
           Refresh
@@ -561,6 +561,83 @@
     </div>
   </div>
 
-  <script src="/app.js?v15" defer></script>
+  <script>
+    window.__songzipBooted = false;
+    window.__songzipFrontendLoaded = false;
+
+    window.setTimeout(async () => {
+      if (window.__songzipBooted) {
+        return;
+      }
+
+      const status = document.getElementById("connectionStatus");
+      const dot = document.getElementById("connectionDot");
+      const banner = document.getElementById("banner");
+
+      const setStatus = (label, cssClass) => {
+        if (status) {
+          status.textContent = label;
+        }
+        if (dot) {
+          dot.className = "connection-dot";
+          if (cssClass) {
+            dot.classList.add(cssClass);
+          }
+        }
+      };
+
+      const setBanner = (message) => {
+        if (!banner) {
+          return;
+        }
+        banner.hidden = false;
+        banner.className = "status-banner info";
+        banner.textContent = message;
+      };
+
+      if (window.__songzipFrontendLoaded) {
+        setStatus("Ready", "ready");
+        setBanner("SongZip loaded and is still reconnecting live updates. Use Refresh if the page looks behind.");
+        return;
+      }
+
+      const healKey = "songzip-cache-heal";
+      const healedOnce = window.sessionStorage.getItem(healKey) === "1";
+
+      if (!healedOnce) {
+        window.sessionStorage.setItem(healKey, "1");
+        setStatus("Refreshing", "ready");
+        setBanner("Refreshing SongZip to pull the latest files...");
+
+        try {
+          if ("serviceWorker" in navigator) {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(registrations.map((registration) => registration.unregister()));
+          }
+
+          if ("caches" in window) {
+            const cacheKeys = await caches.keys();
+            await Promise.all(
+              cacheKeys
+                .filter((cacheKey) => cacheKey.startsWith("songzip-static-"))
+                .map((cacheKey) => caches.delete(cacheKey))
+            );
+          }
+        } catch (_error) {
+          // Ignore cleanup errors and still force a reload.
+        }
+
+        const url = new URL(window.location.href);
+        url.searchParams.set("v", "16");
+        url.searchParams.set("refresh", Date.now().toString());
+        window.location.replace(url.toString());
+        return;
+      }
+
+      setStatus("Refresh Needed", "disconnected");
+      setBanner("SongZip could not finish loading the latest files automatically. Use Refresh once to reload the page.");
+    }, 7000);
+  </script>
+  <script src="/app.js?v16" defer></script>
 </body>
 </html>

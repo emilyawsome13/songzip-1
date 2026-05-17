@@ -1,10 +1,10 @@
-const CACHE_NAME = "songzip-static-v15";
+const CACHE_NAME = "songzip-static-v16";
 const STATIC_ASSETS = [
   "/",
-  "/styles.css?v15",
-  "/app.js?v15",
-  "/manifest.webmanifest?v15",
-  "/icon.svg?v15",
+  "/styles.css?v16",
+  "/app.js?v16",
+  "/manifest.webmanifest?v16",
+  "/icon.svg?v16",
   "/privacy.html",
   "/acceptable-use.html",
   "/privacy-policy.docx",
