@@ -56,6 +56,7 @@ from spotdl.types.song import Song
 from spotdl.utils.arguments import create_parser
 from spotdl.utils.config import (
     DOWNLOADER_OPTIONS,
+    SPOTIFY_OPTIONS,
     create_settings_type,
     get_spotdl_path,
 )
@@ -63,6 +64,7 @@ from spotdl.utils.github import RateLimitError, get_latest_version, get_status
 from spotdl.utils.provider_auth import ProviderAuthError, provider_auth_manager
 from spotdl.utils.songzip_store import SongZipStoreError, songzip_store
 from spotdl.utils.search import get_search_results, get_simple_songs
+from spotdl.utils.spotify import SpotifyClient, SpotifyError
 
 __all__ = [
     "ALLOWED_ORIGINS",
@@ -84,6 +86,7 @@ __all__ = [
     "get_settings",
     "update_settings",
     "fix_mime_types",
+    "ensure_spotify_client_initialized",
 ]
 
 FREE_TIER_DOWNLOAD_LIMIT = 50
@@ -119,6 +122,63 @@ class SubscriptionLimitError(Exception):
     def __init__(self, message: str, prompt: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.prompt = prompt or {}
+
+
+def ensure_spotify_client_initialized(logger: Optional[logging.Logger] = None) -> bool:
+    """
+    Ensure the shared Spotify metadata client is ready for hosted web usage.
+
+    ### Arguments
+    - logger: optional logger for diagnostics
+
+    ### Returns
+    - True when the Spotify client is available
+    """
+
+    try:
+        SpotifyClient()
+        return True
+    except SpotifyError:
+        pass
+
+    spotify_settings = dict(SPOTIFY_OPTIONS)
+    spotify_settings["headless"] = True
+
+    try:
+        SpotifyClient.init(**spotify_settings)
+        if logger is not None:
+            logger.info("Spotify metadata client initialized for SongZip.")
+        return True
+    except SpotifyError as exception:
+        if "already been initialized" in str(exception):
+            return True
+
+        if logger is not None:
+            logger.warning("Spotify metadata client unavailable: %s", exception)
+
+        return False
+
+
+def _friendly_job_error_message(exception: Exception) -> str:
+    """
+    Convert backend exceptions into cleaner dashboard-facing messages.
+    """
+
+    message = str(exception).strip() or exception.__class__.__name__
+
+    if "Spotify client not created" in message:
+        return (
+            "Spotify artist, album, playlist, and track links are unavailable on this "
+            "server right now because Spotify metadata is not initialized."
+        )
+
+    if "Spotify rate limit reached" in message or "returned 429" in message:
+        return (
+            "Spotify links are rate-limited on this server right now. Add your own "
+            "SPOTDL_CLIENT_ID and SPOTDL_CLIENT_SECRET in Render, or try again later."
+        )
+
+    return message
 
 
 def _timestamp_now() -> str:
@@ -1764,19 +1824,21 @@ class Client:
             )
             return
 
+        friendly_error = _friendly_job_error_message(exception)
+
         self.current_job.update(
             {
                 "status": "error",
                 "query": query,
                 "message": "Failed",
                 "finished_at": self._timestamp(),
-                "error": str(exception),
+                "error": friendly_error,
             }
         )
 
         await self.add_event(
             "error",
-            f"Download failed: {exception}",
+            f"Download failed: {friendly_error}",
             kind="job",
             details=traceback.format_exc(),
         )

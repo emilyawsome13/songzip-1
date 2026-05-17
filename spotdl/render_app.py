@@ -22,6 +22,7 @@ from spotdl.utils.web import (
     _normalize_web_audio_providers,
     _normalize_web_output_template,
     app_state,
+    ensure_spotify_client_initialized,
     fix_mime_types,
     get_current_state,
     router,
@@ -158,6 +159,7 @@ def create_app() -> FastAPI:
     async def _startup() -> None:
         app_state.loop = asyncio.get_running_loop()
         app_state.logger = logging.getLogger("uvicorn.error")
+        ensure_spotify_client_initialized(app_state.logger)
 
     app.include_router(router)
 

@@ -9,9 +9,9 @@
     content="Queue multiple links, connect your own accounts, and save flat MP3 bundles in one cleaner SongZip workflow."
   >
   <meta name="theme-color" content="#08111a">
-  <link rel="manifest" href="/manifest.webmanifest?v16">
-  <link rel="icon" href="/icon.svg?v16" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css?v16">
+  <link rel="manifest" href="/manifest.webmanifest?v17">
+  <link rel="icon" href="/icon.svg?v17" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v17">
 </head>
 <body>
   <div class="ambient ambient-one" aria-hidden="true"></div>
@@ -628,7 +628,7 @@
         }
 
         const url = new URL(window.location.href);
-        url.searchParams.set("v", "16");
+        url.searchParams.set("v", "17");
         url.searchParams.set("refresh", Date.now().toString());
         window.location.replace(url.toString());
         return;
@@ -638,6 +638,6 @@
       setBanner("SongZip could not finish loading the latest files automatically. Use Refresh once to reload the page.");
     }, 7000);
   </script>
-  <script src="/app.js?v16" defer></script>
+  <script src="/app.js?v17" defer></script>
 </body>
 </html>
