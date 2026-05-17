@@ -781,10 +781,15 @@ def _decorate_account(account: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
 
     decorated = dict(account)
     admin_email = _configured_admin_email()
+    if admin_email:
+        decorated["is_admin"] = bool(
+            _normalize_email_address(account.get("email")) == admin_email
+        )
+        return decorated
+
     admin_account_key = songzip_store.get_admin_account_key()
     decorated["is_admin"] = bool(
-        (admin_email and _normalize_email_address(account.get("email")) == admin_email)
-        or (admin_account_key and account.get("account_key") == admin_account_key)
+        admin_account_key and account.get("account_key") == admin_account_key
     )
     return decorated
 

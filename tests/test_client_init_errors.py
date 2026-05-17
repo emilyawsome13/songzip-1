@@ -9,6 +9,7 @@ from spotdl.utils.config import DOWNLOADER_OPTIONS
 from spotdl.utils.spotify import SpotifyError
 from spotdl.utils.web import (
     account_google_start,
+    _decorate_account,
     _friendly_job_error_message,
     ensure_spotify_client_initialized,
     get_client,
@@ -102,6 +103,36 @@ class ClientInitErrorTest(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertIn("account_auth_status=error", response.headers["location"])
         self.assertIn("Google%20sign-in%20is%20not%20configured", response.headers["location"])
+
+    def test_configured_admin_email_overrides_legacy_admin_account_key(self):
+        account = {
+            "email": "other-user@example.com",
+            "account_key": "acct-admin-key",
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_ADMIN_EMAIL": "gmelchorcrazy13@gmail.com"},
+            clear=False,
+        ), patch("spotdl.utils.web.songzip_store.get_admin_account_key", return_value="acct-admin-key"):
+            decorated = _decorate_account(account)
+
+        self.assertFalse(decorated["is_admin"])
+
+    def test_matching_admin_email_is_marked_as_admin(self):
+        account = {
+            "email": "gmelchorcrazy13@gmail.com",
+            "account_key": "acct-someone",
+        }
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_ADMIN_EMAIL": "gmelchorcrazy13@gmail.com"},
+            clear=False,
+        ), patch("spotdl.utils.web.songzip_store.get_admin_account_key", return_value="acct-other"):
+            decorated = _decorate_account(account)
+
+        self.assertTrue(decorated["is_admin"])
 
 
 if __name__ == "__main__":
