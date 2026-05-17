@@ -1033,6 +1033,17 @@ a {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.admin-credits-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(125, 204, 236, 0.18);
+  border-radius: var(--radius-md);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(125, 204, 236, 0.1), transparent 24%),
+    rgba(255, 255, 255, 0.02);
+}
+
 .compact-heading {
   margin-bottom: 0;
 }

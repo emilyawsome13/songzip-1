@@ -29,6 +29,8 @@ ACCOUNT_KEY_PATTERN = re.compile(r"[^a-zA-Z0-9_-]+")
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SESSION_TTL_DAYS = 30
 PASSWORD_ITERATIONS = 240_000
+GOOGLE_PASSWORD_PLACEHOLDER = "oauth_google"
+ADMIN_ACCOUNT_META_KEY = "songzip_admin_account_key"
 
 
 class SongZipStoreError(Exception):
@@ -115,6 +117,25 @@ class SongZipStore:
             with connection:
                 yield connection
 
+    @staticmethod
+    def _column_names(connection: sqlite3.Connection, table_name: str) -> set[str]:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        if column_name in self._column_names(connection, table_name):
+            return
+
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
+        )
+
     def _ensure_schema(self):
         with self._managed_connection() as connection:
             connection.executescript(
@@ -158,6 +179,33 @@ class SongZipStore:
                     updated_at TEXT NOT NULL,
                     last_event_json TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            self._ensure_column(
+                connection,
+                "accounts",
+                "auth_provider",
+                "TEXT NOT NULL DEFAULT 'local'",
+            )
+            self._ensure_column(connection, "accounts", "provider_subject", "TEXT")
+            self._ensure_column(connection, "accounts", "display_name", "TEXT")
+            self._ensure_column(
+                connection,
+                "subscriptions",
+                "bonus_credits",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_provider_subject
+                ON accounts(provider_subject)
+                WHERE provider_subject IS NOT NULL
                 """
             )
 
@@ -167,6 +215,9 @@ class SongZipStore:
             "id": row["id"],
             "email": row["email"],
             "account_key": row["account_key"],
+            "auth_provider": row["auth_provider"] or "local",
+            "provider_subject": row["provider_subject"],
+            "display_name": row["display_name"] or row["email"],
             "created_at": row["created_at"],
         }
 
@@ -192,6 +243,71 @@ class SongZipStore:
             generated = _normalize_account_key(f"acct-{secrets.token_urlsafe(10)}")
             if generated and not self._account_key_exists(generated):
                 return generated
+
+    def get_meta(self, key: str) -> Optional[str]:
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM app_meta WHERE key = ?",
+                (str(key),),
+            ).fetchone()
+
+        return None if row is None else str(row["value"])
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._managed_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO app_meta (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (str(key), str(value), _timestamp()),
+            )
+
+    def get_admin_account_key(self) -> Optional[str]:
+        value = self.get_meta(ADMIN_ACCOUNT_META_KEY)
+        return _normalize_account_key(value) or None
+
+    def claim_admin_account(self, account_key: str) -> str:
+        normalized_key = _normalize_account_key(account_key)
+        if not normalized_key:
+            raise SongZipStoreError("Admin account key is not valid.")
+
+        existing = self.get_admin_account_key()
+        if existing:
+            return existing
+
+        self.set_meta(ADMIN_ACCOUNT_META_KEY, normalized_key)
+        return normalized_key
+
+    def get_account_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
+        raw_value = str(identifier or "").strip()
+        if not raw_value:
+            return None
+
+        normalized_email = _normalize_email(raw_value)
+        normalized_key = _normalize_account_key(raw_value)
+
+        with self._managed_connection() as connection:
+            row = None
+            if EMAIL_PATTERN.match(normalized_email):
+                row = connection.execute(
+                    "SELECT * FROM accounts WHERE email = ?",
+                    (normalized_email,),
+                ).fetchone()
+
+            if row is None and normalized_key:
+                row = connection.execute(
+                    "SELECT * FROM accounts WHERE account_key = ?",
+                    (normalized_key,),
+                ).fetchone()
+
+        if row is None:
+            return None
+
+        return self._public_account(row)
 
     def register_account(
         self,
@@ -222,10 +338,28 @@ class SongZipStore:
             with self._managed_connection() as connection:
                 connection.execute(
                     """
-                    INSERT INTO accounts (email, account_key, password_hash, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO accounts (
+                        email,
+                        account_key,
+                        password_hash,
+                        auth_provider,
+                        provider_subject,
+                        display_name,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (normalized_email, account_key, password_hash, now, now),
+                    (
+                        normalized_email,
+                        account_key,
+                        password_hash,
+                        "local",
+                        None,
+                        normalized_email,
+                        now,
+                        now,
+                    ),
                 )
                 account_row = connection.execute(
                     "SELECT * FROM accounts WHERE email = ?",
@@ -249,10 +383,126 @@ class SongZipStore:
                 (normalized_email,),
             ).fetchone()
 
-        if row is None or not _verify_password(password, row["password_hash"]):
+        if row is None:
+            raise SongZipStoreError("Email or password is incorrect.")
+
+        if str(row["auth_provider"] or "local") == "google":
+            raise SongZipStoreError("Use Google sign-in for this account.")
+
+        if not _verify_password(password, row["password_hash"]):
             raise SongZipStoreError("Email or password is incorrect.")
 
         return self._public_account(row)
+
+    def get_or_create_google_account(
+        self,
+        email: str,
+        google_subject: str,
+        display_name: Optional[str] = None,
+        preferred_account_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_email = _normalize_email(email)
+        subject = str(google_subject or "").strip()
+        resolved_display_name = str(display_name or normalized_email).strip() or normalized_email
+        if not EMAIL_PATTERN.match(normalized_email):
+            raise SongZipStoreError("Google sign-in did not return a valid email address.")
+
+        if not subject:
+            raise SongZipStoreError("Google sign-in did not return an account identifier.")
+
+        now = _timestamp()
+        with self._managed_connection() as connection:
+            provider_row = connection.execute(
+                "SELECT * FROM accounts WHERE provider_subject = ?",
+                (subject,),
+            ).fetchone()
+            if provider_row is not None:
+                connection.execute(
+                    """
+                    UPDATE accounts
+                    SET email = ?, display_name = ?, auth_provider = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized_email,
+                        resolved_display_name,
+                        "google",
+                        now,
+                        provider_row["id"],
+                    ),
+                )
+                provider_row = connection.execute(
+                    "SELECT * FROM accounts WHERE id = ?",
+                    (provider_row["id"],),
+                ).fetchone()
+                return self._public_account(provider_row)
+
+            email_row = connection.execute(
+                "SELECT * FROM accounts WHERE email = ?",
+                (normalized_email,),
+            ).fetchone()
+            if email_row is not None:
+                existing_subject = str(email_row["provider_subject"] or "").strip()
+                if existing_subject and existing_subject != subject:
+                    raise SongZipStoreError(
+                        "That email address is already linked to a different Google account."
+                    )
+
+                connection.execute(
+                    """
+                    UPDATE accounts
+                    SET auth_provider = ?, provider_subject = ?, display_name = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        "google",
+                        subject,
+                        resolved_display_name,
+                        now,
+                        email_row["id"],
+                    ),
+                )
+                email_row = connection.execute(
+                    "SELECT * FROM accounts WHERE id = ?",
+                    (email_row["id"],),
+                ).fetchone()
+                return self._public_account(email_row)
+
+            account_key = self._build_account_key(preferred_account_key)
+            connection.execute(
+                """
+                INSERT INTO accounts (
+                    email,
+                    account_key,
+                    password_hash,
+                    auth_provider,
+                    provider_subject,
+                    display_name,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_email,
+                    account_key,
+                    GOOGLE_PASSWORD_PLACEHOLDER,
+                    "google",
+                    subject,
+                    resolved_display_name,
+                    now,
+                    now,
+                ),
+            )
+            created_row = connection.execute(
+                "SELECT * FROM accounts WHERE provider_subject = ?",
+                (subject,),
+            ).fetchone()
+
+        if created_row is None:
+            raise SongZipStoreError("Google sign-in could not finish creating the account.")
+
+        return self._public_account(created_row)
 
     def create_session(
         self,
@@ -345,6 +595,7 @@ class SongZipStore:
         default_state = {
             "tier": "free",
             "downloads_used": 0,
+            "bonus_credits": 0,
             "subscription_id": None,
             "activated_at": None,
             "paypal_status": None,
@@ -364,6 +615,7 @@ class SongZipStore:
             {
                 "tier": row["tier"],
                 "downloads_used": int(row["downloads_used"] or 0),
+                "bonus_credits": int(row["bonus_credits"] or 0),
                 "subscription_id": row["subscription_id"],
                 "activated_at": row["activated_at"],
                 "paypal_status": row["paypal_status"],
@@ -382,15 +634,17 @@ class SongZipStore:
                     account_key,
                     tier,
                     downloads_used,
+                    bonus_credits,
                     subscription_id,
                     activated_at,
                     paypal_status,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_key) DO UPDATE SET
                     tier = excluded.tier,
                     downloads_used = excluded.downloads_used,
+                    bonus_credits = excluded.bonus_credits,
                     subscription_id = excluded.subscription_id,
                     activated_at = excluded.activated_at,
                     paypal_status = excluded.paypal_status,
@@ -400,12 +654,35 @@ class SongZipStore:
                     normalized_key,
                     state.get("tier", "free"),
                     int(state.get("downloads_used", 0) or 0),
+                    int(state.get("bonus_credits", 0) or 0),
                     state.get("subscription_id"),
                     state.get("activated_at"),
                     state.get("paypal_status"),
                     updated_at,
                 ),
             )
+
+    def grant_bonus_credits(
+        self,
+        account_identifier: str,
+        credits: int,
+    ) -> Dict[str, Any]:
+        resolved_credits = int(credits or 0)
+        if resolved_credits <= 0:
+            raise SongZipStoreError("Grant at least 1 song credit.")
+
+        account = self.get_account_by_identifier(account_identifier)
+        if account is None:
+            raise SongZipStoreError("No SongZip account matched that email or account key.")
+
+        subscription = self.load_subscription(account["account_key"])
+        subscription["bonus_credits"] = int(subscription.get("bonus_credits", 0) or 0) + resolved_credits
+        self.save_subscription(account["account_key"], subscription)
+
+        return {
+            "account": account,
+            "subscription": self.load_subscription(account["account_key"]),
+        }
 
     def load_paypal_subscription(self, subscription_id: str) -> Optional[Dict[str, Any]]:
         with self._managed_connection() as connection:

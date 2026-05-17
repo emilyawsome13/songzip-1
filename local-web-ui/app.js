@@ -4,7 +4,7 @@ const CLIENT_STORAGE_KEY = "songzip-client-id";
 const ACCOUNT_STORAGE_KEY = "songzip-account-key";
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MS = 2500;
-const ASSET_VERSION = "v17";
+const ASSET_VERSION = "v18";
 const SOCKET_CONNECT_TIMEOUT_MS = 6000;
 const POLL_REFRESH_MS = 8000;
 const BRAND_NAME = "SongZip";
@@ -289,6 +289,7 @@ function cacheElements() {
     metaError: document.getElementById("metaError"),
     tierName: document.getElementById("tierName"),
     tierUsage: document.getElementById("tierUsage"),
+    tierCredits: document.getElementById("tierCredits"),
     upgradeNowButton: document.getElementById("upgradeNowButton"),
     accountKeyValue: document.getElementById("accountKeyValue"),
     accountStatusCopy: document.getElementById("accountStatusCopy"),
@@ -297,11 +298,14 @@ function cacheElements() {
     useAccountKeyButton: document.getElementById("useAccountKeyButton"),
     accountAuthStatus: document.getElementById("accountAuthStatus"),
     accountAuthCopy: document.getElementById("accountAuthCopy"),
-    accountEmailInput: document.getElementById("accountEmailInput"),
-    accountPasswordInput: document.getElementById("accountPasswordInput"),
-    accountRegisterButton: document.getElementById("accountRegisterButton"),
-    accountLoginButton: document.getElementById("accountLoginButton"),
+    accountGoogleLoginButton: document.getElementById("accountGoogleLoginButton"),
     accountLogoutButton: document.getElementById("accountLogoutButton"),
+    adminCreditsPanel: document.getElementById("adminCreditsPanel"),
+    adminCreditsCopy: document.getElementById("adminCreditsCopy"),
+    adminCreditTargetInput: document.getElementById("adminCreditTargetInput"),
+    adminCreditAmountInput: document.getElementById("adminCreditAmountInput"),
+    grantCreditsButton: document.getElementById("grantCreditsButton"),
+    grantCreditsResult: document.getElementById("grantCreditsResult"),
     songList: document.getElementById("songList"),
     downloadsList: document.getElementById("downloadsList"),
     downloadAdvice: document.getElementById("downloadAdvice"),
@@ -337,19 +341,19 @@ function bindEvents() {
   bindIfPresent(els.reloadSettingsButton, "click", reloadSettings);
   bindIfPresent(els.copyAccountKeyButton, "click", copyAccountKey);
   bindIfPresent(els.useAccountKeyButton, "click", applyAccountKey);
-  bindIfPresent(els.accountRegisterButton, "click", registerAccount);
-  bindIfPresent(els.accountLoginButton, "click", loginAccount);
+  bindIfPresent(els.accountGoogleLoginButton, "click", startGoogleLogin);
   bindIfPresent(els.accountLogoutButton, "click", logoutAccount);
+  bindIfPresent(els.grantCreditsButton, "click", grantSongCredits);
   bindIfPresent(els.accountKeyInput, "keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       applyAccountKey();
     }
   });
-  bindIfPresent(els.accountPasswordInput, "keydown", (event) => {
+  bindIfPresent(els.adminCreditAmountInput, "keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      loginAccount();
+      grantSongCredits();
     }
   });
   bindIfPresent(els.upgradeNowButton, "click", () => {
@@ -749,6 +753,7 @@ function renderSubscription(subscription) {
   const tierLabel = TIER_LABELS[tier] || titleizeKey(tier);
   const limit = Number(subscription?.limit);
   const used = Number(subscription?.downloads_used || 0);
+  const bonusCredits = Number(subscription?.bonus_credits || 0);
 
   if (els.tierName) {
     els.tierName.textContent = tierLabel;
@@ -759,6 +764,14 @@ function renderSubscription(subscription) {
       els.tierUsage.textContent = `${used} / ${limit} songs`;
     } else {
       els.tierUsage.textContent = "Paid tier active";
+    }
+  }
+
+  if (els.tierCredits) {
+    if (bonusCredits > 0) {
+      els.tierCredits.textContent = `${bonusCredits} extra songs`;
+    } else {
+      els.tierCredits.textContent = "0 extra songs";
     }
   }
 
@@ -783,9 +796,10 @@ function renderAccountIdentity(account = null) {
   }
 
   const authenticated = Boolean(state.account?.authenticated || account?.authenticated);
+  const authProvider = String(state.account?.account?.auth_provider || account?.auth_provider || "").toLowerCase();
   if (els.accountStatusCopy) {
     els.accountStatusCopy.textContent = authenticated
-      ? `Signed in${state.account?.account?.email ? ` as ${state.account.account.email}` : ""}. Your tier follows this account automatically.`
+      ? `Signed in${state.account?.account?.email ? ` as ${state.account.account.email}` : ""}${authProvider === "google" ? " with Google" : ""}. Your tier follows this account automatically.`
       : "Use this same key on another device to restore the same paid tier and usage state.";
   }
 }
@@ -793,39 +807,30 @@ function renderAccountIdentity(account = null) {
 function renderAccountAccess() {
   const authenticated = Boolean(state.account?.authenticated);
   const email = state.account?.account?.email || "";
+  const displayName = state.account?.account?.display_name || email;
+  const isAdmin = Boolean(state.account?.account?.is_admin);
+  const googleLoginSupported = isGoogleLoginSupportedHere();
 
   if (els.accountAuthStatus) {
-    els.accountAuthStatus.textContent = authenticated ? "Signed In" : "Guest";
+    els.accountAuthStatus.textContent = authenticated ? (isAdmin ? "Admin" : "Signed In") : "Guest";
     els.accountAuthStatus.className = "status-pill";
     els.accountAuthStatus.classList.add(authenticated ? "connected" : "idle");
   }
 
   if (els.accountAuthCopy) {
     els.accountAuthCopy.textContent = authenticated
-      ? `Signed in as ${email}. This account now owns the tier and can restore it on other devices.`
-      : "Create a SongZip account to carry your tier and billing state across devices without pasting a key every time.";
+      ? `Signed in as ${displayName}. This account now owns the tier${isAdmin ? " and can grant song credits." : " and can restore it on other devices."}`
+      : googleLoginSupported
+        ? "Use Google sign-in to carry your tier and SongZip credits across devices without pasting a key every time."
+        : "Google sign-in needs localhost or your HTTPS Render domain. On raw LAN IPs, keep using the SongZip account key.";
   }
 
-  if (els.accountEmailInput) {
-    els.accountEmailInput.disabled = authenticated;
-    if (!authenticated && !els.accountEmailInput.value && email) {
-      els.accountEmailInput.value = email;
-    }
-  }
-
-  if (els.accountPasswordInput) {
-    els.accountPasswordInput.disabled = authenticated;
-    if (authenticated) {
-      els.accountPasswordInput.value = "";
-    }
-  }
-
-  if (els.accountRegisterButton) {
-    els.accountRegisterButton.hidden = authenticated;
-  }
-
-  if (els.accountLoginButton) {
-    els.accountLoginButton.hidden = authenticated;
+  if (els.accountGoogleLoginButton) {
+    els.accountGoogleLoginButton.hidden = authenticated;
+    els.accountGoogleLoginButton.disabled = !authenticated && !googleLoginSupported;
+    els.accountGoogleLoginButton.title = googleLoginSupported
+      ? ""
+      : "Google sign-in requires localhost or an HTTPS domain.";
   }
 
   if (els.accountLogoutButton) {
@@ -839,6 +844,25 @@ function renderAccountAccess() {
   if (els.useAccountKeyButton) {
     els.useAccountKeyButton.hidden = authenticated;
   }
+
+  if (els.adminCreditsPanel) {
+    els.adminCreditsPanel.hidden = !authenticated || !isAdmin;
+  }
+
+  if (els.adminCreditsCopy) {
+    els.adminCreditsCopy.textContent = isAdmin
+      ? "Grant extra free-tier song credits by account email or SongZip account key."
+      : "Only the SongZip admin account can grant song credits.";
+  }
+}
+
+function isGoogleLoginSupportedHere() {
+  const host = String(window.location.hostname || "").toLowerCase();
+  return (
+    window.location.protocol === "https:"
+    || host === "localhost"
+    || host === "127.0.0.1"
+  );
 }
 
 function openUpgradePrompt(prompt) {
@@ -923,56 +947,78 @@ async function applyAccountKey() {
   }
 }
 
-function collectAccountCredentials() {
-  return {
-    email: String(els.accountEmailInput?.value || "").trim(),
-    password: String(els.accountPasswordInput?.value || ""),
-  };
+function startGoogleLogin() {
+  if (!isGoogleLoginSupportedHere()) {
+    showBanner(
+      "info",
+      "Google sign-in works on localhost or your HTTPS Render domain. On raw LAN IPs, keep using the SongZip account key."
+    );
+    return;
+  }
+
+  setBusy(els.accountGoogleLoginButton, true);
+  window.location.assign(withClient("/api/account/google/start"));
 }
 
-async function registerAccount() {
-  const credentials = collectAccountCredentials();
-  if (!credentials.email || !credentials.password) {
-    showBanner("error", "Enter an email and password first.");
+async function grantSongCredits() {
+  const accountIdentifier = String(els.adminCreditTargetInput?.value || "").trim();
+  const credits = Number(els.adminCreditAmountInput?.value || 0);
+
+  if (!accountIdentifier) {
+    showBanner("error", "Enter an account email or SongZip key first.");
+    return;
+  }
+
+  if (!Number.isInteger(credits) || credits <= 0) {
+    showBanner("error", "Enter a whole number of song credits.");
     return;
   }
 
   try {
-    setBusy(els.accountRegisterButton, true);
-    const response = await api(withClient("/api/account/register"), {
+    setBusy(els.grantCreditsButton, true);
+    const response = await api(withClient("/api/account/credits/grant"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(credentials),
+      body: JSON.stringify({
+        account_identifier: accountIdentifier,
+        credits,
+      }),
     });
-    await applyAuthenticatedAccountResponse(response, "Account created and signed in.");
+
+    if (response?.subscription && response.account?.account_key === state.accountKey) {
+      state.session = state.session || {};
+      state.session.subscription = response.subscription;
+    } else {
+      await loadSessionState();
+    }
+
+    renderState();
+
+    const grantedAccount = response?.account?.email || response?.account?.account_key || accountIdentifier;
+    const totalCredits = Number(response?.subscription?.bonus_credits || 0);
+    const totalLimit = response?.subscription?.limit;
+    const resultMessage = Number.isFinite(totalLimit)
+      ? `Added ${credits} extra song credits to ${grantedAccount}. Free-tier cap is now ${totalLimit} songs with ${totalCredits} bonus credits.`
+      : `Added ${credits} extra song credits to ${grantedAccount}.`;
+
+    if (els.grantCreditsResult) {
+      els.grantCreditsResult.textContent = resultMessage;
+    }
+
+    els.adminCreditTargetInput.value = "";
+    await Promise.all([loadAccountMe(), loadAuthProviders()]);
+    renderAccountIdentity();
+    renderAccountAccess();
+    renderAuthProviders();
+    showBanner("success", resultMessage);
   } catch (error) {
     console.error(error);
-    showBanner("error", `Could not create the account: ${error.message}`);
+    if (els.grantCreditsResult) {
+      els.grantCreditsResult.textContent = error.message;
+    }
+    showBanner("error", `Could not grant song credits: ${error.message}`);
   } finally {
-    setBusy(els.accountRegisterButton, false);
-  }
-}
-
-async function loginAccount() {
-  const credentials = collectAccountCredentials();
-  if (!credentials.email || !credentials.password) {
-    showBanner("error", "Enter your email and password first.");
-    return;
-  }
-
-  try {
-    setBusy(els.accountLoginButton, true);
-    const response = await api(withClient("/api/account/login"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(credentials),
-    });
-    await applyAuthenticatedAccountResponse(response, "Signed in successfully.");
-  } catch (error) {
-    console.error(error);
-    showBanner("error", `Could not sign in: ${error.message}`);
-  } finally {
-    setBusy(els.accountLoginButton, false);
+    setBusy(els.grantCreditsButton, false);
   }
 }
 
@@ -1004,41 +1050,6 @@ async function logoutAccount() {
   } finally {
     setBusy(els.accountLogoutButton, false);
   }
-}
-
-async function applyAuthenticatedAccountResponse(response, successMessage) {
-  const account = response?.account || null;
-  const subscription = response?.subscription || null;
-  if (!account?.account_key) {
-    throw new Error("Account response did not include an account key.");
-  }
-
-  state.account = {
-    authenticated: true,
-    account,
-    account_key: account.account_key,
-  };
-  state.accountKey = normalizeAccountKey(account.account_key);
-  state.lastUpgradePromptKey = null;
-  window.localStorage.setItem(ACCOUNT_STORAGE_KEY, state.accountKey);
-  renderAccountIdentity({ key: state.accountKey, authenticated: true });
-  renderAccountAccess();
-
-  if (subscription) {
-    state.session = state.session || {};
-    state.session.subscription = subscription;
-  }
-
-  await Promise.all([loadSessionState(), loadAuthProviders(), loadAccountMe()]);
-  renderState();
-  renderAuthProviders();
-  if (state.ws) {
-    state.suppressNextSocketCloseBanner = true;
-    state.ws.close();
-  } else {
-    connectSocket();
-  }
-  showBanner("success", successMessage);
 }
 
 function renderSongList(songs) {
@@ -1840,21 +1851,32 @@ function showBanner(type, message) {
 function handleAuthCallbackResult() {
   const url = new URL(window.location.href);
   const provider = url.searchParams.get("auth_provider");
-  const status = url.searchParams.get("auth_status");
-  const message = url.searchParams.get("auth_message");
-  if (!provider || !status || !message) {
+  const providerStatus = url.searchParams.get("auth_status");
+  const providerMessage = url.searchParams.get("auth_message");
+  const accountStatus = url.searchParams.get("account_auth_status");
+  const accountMessage = url.searchParams.get("account_auth_message");
+
+  if (provider && providerStatus && providerMessage) {
+    state.pendingBanner = {
+      type: providerStatus === "connected" ? "success" : "error",
+      message: providerMessage,
+    };
+  } else if (accountStatus && accountMessage) {
+    state.pendingBanner = {
+      type: accountStatus === "connected" ? "success" : "error",
+      message: accountMessage,
+    };
+  } else {
     return;
   }
 
-  state.pendingBanner = {
-    type: status === "connected" ? "success" : "error",
-    message,
-  };
   showBanner(state.pendingBanner.type, state.pendingBanner.message);
 
   url.searchParams.delete("auth_provider");
   url.searchParams.delete("auth_status");
   url.searchParams.delete("auth_message");
+  url.searchParams.delete("account_auth_status");
+  url.searchParams.delete("account_auth_message");
   window.history.replaceState({}, document.title, url.toString());
 }
 

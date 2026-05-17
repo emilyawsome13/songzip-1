@@ -2,7 +2,11 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from spotdl.utils.songzip_store import SongZipStore, SongZipStoreError
+from spotdl.utils.songzip_store import (
+    GOOGLE_PASSWORD_PLACEHOLDER,
+    SongZipStore,
+    SongZipStoreError,
+)
 
 
 class SongZipStoreTest(unittest.TestCase):
@@ -75,6 +79,54 @@ class SongZipStoreTest(unittest.TestCase):
             self.assertIsNotNone(record)
             self.assertEqual(record["tier"], "plus")
             self.assertEqual(record["status"], "ACTIVE")
+
+    def test_google_account_reuses_email_and_disables_password_login(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            local_account = store.register_account("test@example.com", "password123")
+            google_account = store.get_or_create_google_account(
+                "test@example.com",
+                "google-subject-123",
+                display_name="Test Person",
+            )
+            with self.assertRaises(SongZipStoreError):
+                store.authenticate_account("test@example.com", "password123")
+
+        self.assertEqual(google_account["account_key"], local_account["account_key"])
+        self.assertEqual(google_account["auth_provider"], "google")
+        self.assertEqual(google_account["provider_subject"], "google-subject-123")
+        self.assertEqual(google_account["display_name"], "Test Person")
+
+    def test_google_account_creation_uses_oauth_placeholder_password(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            account = store.get_or_create_google_account(
+                "google@example.com",
+                "google-subject-xyz",
+                display_name="Google User",
+            )
+
+            with store._managed_connection() as connection:  # pylint: disable=protected-access
+                row = connection.execute(
+                    "SELECT password_hash FROM accounts WHERE id = ?",
+                    (account["id"],),
+                ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["password_hash"], GOOGLE_PASSWORD_PLACEHOLDER)
+
+    def test_grant_bonus_credits_updates_subscription(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            account = store.register_account("credits@example.com", "password123")
+            result = store.grant_bonus_credits(account["email"], 25)
+            stored_bonus_credits = store.load_subscription(account["account_key"])[
+                "bonus_credits"
+            ]
+
+        self.assertEqual(result["account"]["account_key"], account["account_key"])
+        self.assertEqual(result["subscription"]["bonus_credits"], 25)
+        self.assertEqual(stored_bonus_credits, 25)
 
 
 if __name__ == "__main__":

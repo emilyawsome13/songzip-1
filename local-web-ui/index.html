@@ -9,9 +9,9 @@
     content="Queue multiple links, connect your own accounts, and save flat MP3 bundles in one cleaner SongZip workflow."
   >
   <meta name="theme-color" content="#08111a">
-  <link rel="manifest" href="/manifest.webmanifest?v17">
-  <link rel="icon" href="/icon.svg?v17" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css?v17">
+  <link rel="manifest" href="/manifest.webmanifest?v18">
+  <link rel="icon" href="/icon.svg?v18" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v18">
 </head>
 <body>
   <div class="ambient ambient-one" aria-hidden="true"></div>
@@ -276,6 +276,10 @@
               <span class="mini-label">Usage</span>
               <strong id="tierUsage">0 / 50 songs</strong>
             </div>
+            <div class="tier-chip">
+              <span class="mini-label">Credits</span>
+              <strong id="tierCredits">0 extra songs</strong>
+            </div>
             <button class="button button-secondary" id="upgradeNowButton" type="button">
               Upgrade
             </button>
@@ -318,21 +322,50 @@
               </div>
               <span class="status-pill" id="accountAuthStatus">Guest</span>
             </div>
-            <p class="helper-copy" id="accountAuthCopy">Create a SongZip account to carry your tier and billing state across devices without pasting a key every time.</p>
-            <div class="settings-grid">
-              <label class="field">
-                <span class="field-label">Email</span>
-                <input id="accountEmailInput" type="text" inputmode="email" autocomplete="email" placeholder="you@example.com">
-              </label>
-              <label class="field">
-                <span class="field-label">Password</span>
-                <input id="accountPasswordInput" type="password" autocomplete="current-password" placeholder="At least 8 characters">
-              </label>
-            </div>
+            <p class="helper-copy" id="accountAuthCopy">Use Google sign-in to carry your tier and SongZip credits across devices without pasting a key every time.</p>
             <div class="button-row compact-buttons">
-              <button class="button button-primary" id="accountRegisterButton" type="button">Create Account</button>
-              <button class="button button-secondary" id="accountLoginButton" type="button">Sign In</button>
+              <button class="button button-primary" id="accountGoogleLoginButton" type="button">Continue with Google</button>
               <button class="button button-secondary" id="accountLogoutButton" type="button" hidden>Sign Out</button>
+            </div>
+            <p class="field-help">Google sign-in works best on localhost or your HTTPS Render domain. Raw LAN IP addresses usually cannot be registered as Google OAuth redirect URIs.</p>
+
+            <div class="admin-credits-panel" id="adminCreditsPanel" hidden>
+              <div class="section-heading compact-heading">
+                <div>
+                  <p class="eyebrow">Credits</p>
+                  <h3>Grant song credits</h3>
+                </div>
+                <span class="status-pill connected">Admin</span>
+              </div>
+              <p class="helper-copy" id="adminCreditsCopy">Grant extra free-tier song credits by account email or SongZip account key.</p>
+              <div class="settings-grid">
+                <label class="field">
+                  <span class="field-label">Account email or key</span>
+                  <input
+                    id="adminCreditTargetInput"
+                    type="text"
+                    inputmode="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="user@example.com or acct-demo"
+                  >
+                </label>
+                <label class="field">
+                  <span class="field-label">Song credits</span>
+                  <input
+                    id="adminCreditAmountInput"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    step="1"
+                    value="25"
+                  >
+                </label>
+              </div>
+              <div class="button-row compact-buttons">
+                <button class="button button-primary" id="grantCreditsButton" type="button">Grant Credits</button>
+              </div>
+              <p class="field-help" id="grantCreditsResult">Credits are added on top of the free 50-song allowance for that account.</p>
             </div>
           </div>
 
@@ -638,6 +671,6 @@
       setBanner("SongZip could not finish loading the latest files automatically. Use Refresh once to reload the page.");
     }, 7000);
   </script>
-  <script src="/app.js?v17" defer></script>
+  <script src="/app.js?v18" defer></script>
 </body>
 </html>

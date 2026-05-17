@@ -47,6 +47,25 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(overflow, 0)
         self.assertIsNone(client.pending_upgrade_prompt)
 
+    def test_free_tier_bonus_credits_extend_limit(self):
+        client = Client.__new__(Client)
+        client.subscription = {
+            "tier": "free",
+            "downloads_used": FREE_TIER_DOWNLOAD_LIMIT,
+            "bonus_credits": 3,
+        }
+        client.pending_upgrade_prompt = None
+        client._save_subscription_state = lambda: None  # type: ignore[method-assign]
+
+        allowed, overflow = client._reserve_download_capacity(["one", "two", "three", "four"])  # pylint: disable=protected-access
+
+        self.assertEqual(allowed, ["one", "two", "three"])
+        self.assertEqual(overflow, 1)
+        self.assertEqual(
+            client.subscription["downloads_used"],
+            FREE_TIER_DOWNLOAD_LIMIT + 3,
+        )
+
     def test_subscription_state_persists_for_activation_flow(self):
         with TemporaryDirectory() as temp_dir:
             store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")

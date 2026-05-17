@@ -12,6 +12,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import traceback
 import urllib.error
@@ -112,6 +113,9 @@ PAYPAL_PLAN_TO_TIER = {
     os.environ.get("SONGZIP_PAYPAL_PRO_PLAN_ID", "P-3HV972983J415051HNID6Z2A"): "pro",
 }
 SONGZIP_SESSION_COOKIE = "songzip_session"
+GOOGLE_ACCOUNT_OAUTH_SCOPES = ["openid", "email", "profile"]
+GOOGLE_ACCOUNT_STATE_TTL_SECONDS = 900
+_pending_google_account_states: Dict[str, Dict[str, str]] = {}
 
 
 class SubscriptionLimitError(Exception):
@@ -247,10 +251,69 @@ def _default_subscription_state() -> Dict[str, Any]:
     return {
         "tier": "free",
         "downloads_used": 0,
+        "bonus_credits": 0,
         "subscription_id": None,
         "activated_at": None,
         "paypal_status": None,
         "updated_at": _timestamp_now(),
+    }
+
+
+def _get_subscription_limit_for_state(subscription_state: Optional[Dict[str, Any]]) -> Optional[int]:
+    """
+    Resolve the active download cap for a subscription payload.
+
+    ### Arguments
+    - subscription_state: subscription state payload
+
+    ### Returns
+    - numeric cap or None when uncapped in this prototype
+    """
+
+    state = subscription_state or {}
+    if str(state.get("tier", "free")).strip().lower() == "free":
+        return FREE_TIER_DOWNLOAD_LIMIT + max(0, int(state.get("bonus_credits", 0) or 0))
+
+    return None
+
+
+def _build_subscription_snapshot(
+    account_key: str,
+    subscription_state: Optional[Dict[str, Any]],
+    pending_upgrade_prompt: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a serializable subscription snapshot from stored state.
+
+    ### Arguments
+    - account_key: active SongZip account key
+    - subscription_state: raw stored subscription state
+    - pending_upgrade_prompt: optional upgrade message for the current client
+
+    ### Returns
+    - normalized subscription payload for API consumers
+    """
+
+    state = dict(subscription_state or _default_subscription_state())
+    limit = _get_subscription_limit_for_state(state)
+    used = max(0, int(state.get("downloads_used", 0) or 0))
+    remaining = max(0, limit - used) if limit is not None else None
+
+    return {
+        "account_key": _normalize_account_key(account_key),
+        "tier": str(state.get("tier", "free")).strip().lower(),
+        "downloads_used": used,
+        "bonus_credits": max(0, int(state.get("bonus_credits", 0) or 0)),
+        "limit": limit,
+        "remaining": remaining,
+        "subscription_id": state.get("subscription_id"),
+        "activated_at": state.get("activated_at"),
+        "paypal_status": state.get("paypal_status"),
+        "upgrade_required": bool(
+            pending_upgrade_prompt and str(state.get("tier", "free")).strip().lower() == "free"
+        )
+        or (limit is not None and remaining == 0),
+        "upgrade_prompt": pending_upgrade_prompt,
     }
 
 
@@ -313,6 +376,9 @@ def _subscription_state_has_usage_or_payment(state: Optional[Dict[str, Any]]) ->
         return True
 
     if int(state.get("downloads_used", 0) or 0) > 0:
+        return True
+
+    if int(state.get("bonus_credits", 0) or 0) > 0:
         return True
 
     return bool(state.get("subscription_id") or state.get("paypal_status"))
@@ -394,6 +460,9 @@ def _migrate_subscription_state(source_key: str, target_key: str) -> Dict[str, A
     merged_state["downloads_used"] = max(
         int(target_state.get("downloads_used", 0) or 0),
         int(source_state.get("downloads_used", 0) or 0),
+    )
+    merged_state["bonus_credits"] = int(target_state.get("bonus_credits", 0) or 0) + int(
+        source_state.get("bonus_credits", 0) or 0
     )
 
     source_tier = str(source_state.get("tier", "free")).strip().lower()
@@ -698,6 +767,28 @@ def _clear_songzip_session_cookie(response: Response):
     response.delete_cookie(SONGZIP_SESSION_COOKIE, path="/")
 
 
+def _normalize_email_address(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
+
+
+def _configured_admin_email() -> str:
+    return _normalize_email_address(os.environ.get("SONGZIP_ADMIN_EMAIL"))
+
+
+def _decorate_account(account: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if account is None:
+        return None
+
+    decorated = dict(account)
+    admin_email = _configured_admin_email()
+    admin_account_key = songzip_store.get_admin_account_key()
+    decorated["is_admin"] = bool(
+        (admin_email and _normalize_email_address(account.get("email")) == admin_email)
+        or (admin_account_key and account.get("account_key") == admin_account_key)
+    )
+    return decorated
+
+
 def _resolve_authenticated_account(request: Optional[Request]) -> Optional[Dict[str, Any]]:
     """
     Resolve the authenticated SongZip account from the current request cookie.
@@ -713,7 +804,167 @@ def _resolve_authenticated_account(request: Optional[Request]) -> Optional[Dict[
         return None
 
     session_token = request.cookies.get(SONGZIP_SESSION_COOKIE)
-    return songzip_store.get_account_by_session(session_token)
+    return _decorate_account(songzip_store.get_account_by_session(session_token))
+
+
+def _claim_google_admin_if_needed(account: Dict[str, Any]) -> Dict[str, Any]:
+    admin_email = _configured_admin_email()
+    if admin_email:
+        return _decorate_account(account) or account
+
+    if not songzip_store.get_admin_account_key():
+        songzip_store.claim_admin_account(account["account_key"])
+
+    return _decorate_account(account) or account
+
+
+def _assert_admin_account(request: Request) -> Dict[str, Any]:
+    account = _resolve_authenticated_account(request)
+    if account is None:
+        raise HTTPException(status_code=401, detail="Sign in first.")
+
+    if not account.get("is_admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the SongZip admin account can grant song credits.",
+        )
+
+    return account
+
+
+def _prune_google_account_states():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expired: List[str] = []
+    for state_token, payload in _pending_google_account_states.items():
+        created_at = payload.get("created_at")
+        try:
+            created = datetime.datetime.fromisoformat(str(created_at))
+        except (TypeError, ValueError):
+            created = None
+
+        if created is None or (now - created).total_seconds() > GOOGLE_ACCOUNT_STATE_TTL_SECONDS:
+            expired.append(state_token)
+
+    for state_token in expired:
+        _pending_google_account_states.pop(state_token, None)
+
+
+def _build_google_login_redirect_uri(request: Request) -> str:
+    configured = str(os.environ.get("SONGZIP_GOOGLE_LOGIN_REDIRECT_URI", "")).strip()
+    if configured:
+        return configured
+
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/api/account/google/callback"
+
+
+def _google_login_client_config(request: Request) -> Dict[str, str]:
+    client_id = str(
+        os.environ.get("SONGZIP_GOOGLE_LOGIN_CLIENT_ID")
+        or os.environ.get("SPOTDL_GOOGLE_OAUTH_CLIENT_ID")
+        or ""
+    ).strip()
+    client_secret = str(
+        os.environ.get("SONGZIP_GOOGLE_LOGIN_CLIENT_SECRET")
+        or os.environ.get("SPOTDL_GOOGLE_OAUTH_CLIENT_SECRET")
+        or ""
+    ).strip()
+    redirect_uri = _build_google_login_redirect_uri(request)
+
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Google sign-in is not configured yet. Add "
+                "SONGZIP_GOOGLE_LOGIN_CLIENT_ID and SONGZIP_GOOGLE_LOGIN_CLIENT_SECRET "
+                "(or the matching SPOTDL_GOOGLE_OAUTH_* values) first."
+            ),
+        )
+
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+    }
+
+
+def _build_google_login_redirect_back(
+    request: Request,
+    status: str,
+    message: str,
+) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return (
+        f"{base_url}/?account_auth_status={urllib.parse.quote(status)}"
+        f"&account_auth_message={urllib.parse.quote(message)}"
+    )
+
+
+def _exchange_google_login_code(
+    client_config: Dict[str, str],
+    code: str,
+) -> Dict[str, Any]:
+    request = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=urllib.parse.urlencode(
+            {
+                "code": code,
+                "client_id": client_config["client_id"],
+                "client_secret": client_config["client_secret"],
+                "redirect_uri": client_config["redirect_uri"],
+                "grant_type": "authorization_code",
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        raise HTTPException(
+            status_code=502,
+            detail="Google sign-in could not exchange the authorization code.",
+        ) from error
+
+    access_token = str(payload.get("access_token", "")).strip()
+    if not access_token:
+        raise HTTPException(
+            status_code=502,
+            detail="Google sign-in did not return an access token.",
+        )
+
+    return payload
+
+
+def _fetch_google_login_profile(access_token: str) -> Dict[str, Any]:
+    request = urllib.request.Request(
+        "https://openidconnect.googleapis.com/v1/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        raise HTTPException(
+            status_code=502,
+            detail="Google sign-in could not load your account profile.",
+        ) from error
+
+    if not payload.get("email") or not payload.get("sub"):
+        raise HTTPException(
+            status_code=502,
+            detail="Google sign-in did not return the required account profile fields.",
+        )
+
+    if payload.get("email_verified") is False:
+        raise HTTPException(
+            status_code=400,
+            detail="Google sign-in requires a verified email address.",
+        )
+
+    return payload
 
 ALLOWED_ORIGINS = [
     "http://localhost:8800",
@@ -1098,10 +1349,7 @@ class Client:
         - numeric cap or None when uncapped in this prototype
         """
 
-        if self.subscription.get("tier") == "free":
-            return FREE_TIER_DOWNLOAD_LIMIT
-
-        return None
+        return _get_subscription_limit_for_state(self.subscription)
 
     def get_subscription_snapshot(self) -> Dict[str, Any]:
         """
@@ -1111,25 +1359,11 @@ class Client:
         - subscription state for API consumers
         """
 
-        limit = self._get_subscription_limit()
-        used = int(self.subscription.get("downloads_used", 0))
-        remaining = max(0, limit - used) if limit is not None else None
-
-        return {
-            "account_key": self.account_key,
-            "tier": str(self.subscription.get("tier", "free")).lower(),
-            "downloads_used": used,
-            "limit": limit,
-            "remaining": remaining,
-            "subscription_id": self.subscription.get("subscription_id"),
-            "activated_at": self.subscription.get("activated_at"),
-            "paypal_status": self.subscription.get("paypal_status"),
-            "upgrade_required": bool(
-                self.pending_upgrade_prompt and self.subscription.get("tier") == "free"
-            )
-            or (limit is not None and remaining == 0),
-            "upgrade_prompt": self.pending_upgrade_prompt,
-        }
+        return _build_subscription_snapshot(
+            self.account_key,
+            self.subscription,
+            pending_upgrade_prompt=self.pending_upgrade_prompt,
+        )
 
     def activate_subscription_tier(
         self,
@@ -1194,7 +1428,8 @@ class Client:
             return songs, 0
 
         used = int(self.subscription.get("downloads_used", 0))
-        remaining = max(0, FREE_TIER_DOWNLOAD_LIMIT - used)
+        limit = self._get_subscription_limit() or FREE_TIER_DOWNLOAD_LIMIT
+        remaining = max(0, limit - used)
         requested = len(songs)
 
         if remaining <= 0:
@@ -1204,7 +1439,7 @@ class Client:
                 "allowed": 0,
                 "held": requested,
                 "used": used,
-                "limit": FREE_TIER_DOWNLOAD_LIMIT,
+                "limit": limit,
                 "message": "Free tier limit reached. Upgrade to keep downloading songs.",
             }
             return [], requested
@@ -1214,14 +1449,14 @@ class Client:
         self.subscription["downloads_used"] = used + len(allowed)
         self._save_subscription_state()
 
-        if overflow_count > 0 or self.subscription["downloads_used"] >= FREE_TIER_DOWNLOAD_LIMIT:
+        if overflow_count > 0 or self.subscription["downloads_used"] >= limit:
             self.pending_upgrade_prompt = {
                 "tier": "free",
                 "requested": requested,
                 "allowed": len(allowed),
                 "held": overflow_count,
                 "used": int(self.subscription["downloads_used"]),
-                "limit": FREE_TIER_DOWNLOAD_LIMIT,
+                "limit": limit,
                 "message": (
                     "Free tier limit reached. Upgrade to keep downloading more songs."
                     if overflow_count == 0
@@ -1524,6 +1759,11 @@ class Client:
                     self.authenticated_account.get("email")
                     if self.authenticated_account
                     else None
+                ),
+                "is_admin": bool(
+                    self.authenticated_account.get("is_admin")
+                    if self.authenticated_account
+                    else False
                 ),
             },
             "job": self.current_job,
@@ -2096,6 +2336,15 @@ class AccountCredentialsRequest(BaseModel):
     password: str
 
 
+class AccountCreditGrantRequest(BaseModel):
+    """
+    Admin credit-grant body.
+    """
+
+    account_identifier: str
+    credits: int
+
+
 class SubscriptionActivationRequest(BaseModel):
     """
     Subscription activation body used by the pricing flow.
@@ -2185,8 +2434,10 @@ async def websocket_endpoint(
     - websocket: The WebSocket instance.
     """
 
-    authenticated_account = songzip_store.get_account_by_session(
+    authenticated_account = _decorate_account(
+        songzip_store.get_account_by_session(
         websocket.cookies.get(SONGZIP_SESSION_COOKIE)
+        )
     )
     resolved_account_key = (
         authenticated_account.get("account_key")
@@ -2370,6 +2621,133 @@ def account_me(
     }
 
 
+@router.get("/api/account/google/start", response_model=None)
+def account_google_start(
+    request: Request,
+    client_id: Union[str, None] = Query(default=None),
+    account_key: Union[str, None] = Query(default=None),
+) -> RedirectResponse:
+    """
+    Start Google OAuth login for a SongZip account.
+    """
+
+    resolved_client_id = str(client_id or "").strip()
+    resolved_account_key = _normalize_account_key(account_key) or _normalize_account_key(
+        resolved_client_id
+    )
+    if not resolved_client_id:
+        raise HTTPException(status_code=400, detail="SongZip client_id is required.")
+
+    client_config = _google_login_client_config(request)
+    _prune_google_account_states()
+    state_token = secrets.token_urlsafe(24)
+    _pending_google_account_states[state_token] = {
+        "client_id": resolved_client_id,
+        "account_key": resolved_account_key,
+        "created_at": _timestamp_now(),
+        "redirect_uri": client_config["redirect_uri"],
+    }
+
+    auth_url = (
+        "https://accounts.google.com/o/oauth2/v2/auth?"
+        + urllib.parse.urlencode(
+            {
+                "client_id": client_config["client_id"],
+                "redirect_uri": client_config["redirect_uri"],
+                "response_type": "code",
+                "scope": " ".join(GOOGLE_ACCOUNT_OAUTH_SCOPES),
+                "access_type": "offline",
+                "include_granted_scopes": "true",
+                "prompt": "select_account",
+                "state": state_token,
+            }
+        )
+    )
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+@router.get("/api/account/google/callback", response_model=None)
+def account_google_callback(
+    request: Request,
+    response: Response,
+    state: Optional[str] = None,
+    code: Optional[str] = None,
+    error: Optional[str] = None,
+) -> RedirectResponse:
+    """
+    Complete Google OAuth login for a SongZip account.
+    """
+
+    if error:
+        return RedirectResponse(
+            url=_build_google_login_redirect_back(
+                request,
+                "error",
+                "Google sign-in was cancelled or denied.",
+            ),
+            status_code=303,
+        )
+
+    _prune_google_account_states()
+    pending = _pending_google_account_states.pop(str(state or ""), None)
+    if pending is None:
+        return RedirectResponse(
+            url=_build_google_login_redirect_back(
+                request,
+                "error",
+                "The Google sign-in session expired. Start again.",
+            ),
+            status_code=303,
+        )
+
+    if not code:
+        return RedirectResponse(
+            url=_build_google_login_redirect_back(
+                request,
+                "error",
+                "Google sign-in did not return an authorization code.",
+            ),
+            status_code=303,
+        )
+
+    try:
+        client_config = _google_login_client_config(request)
+        client_config["redirect_uri"] = pending.get("redirect_uri") or client_config["redirect_uri"]
+        token_payload = _exchange_google_login_code(client_config, code)
+        profile = _fetch_google_login_profile(str(token_payload["access_token"]))
+        account = songzip_store.get_or_create_google_account(
+            email=str(profile["email"]),
+            google_subject=str(profile["sub"]),
+            display_name=str(profile.get("name") or profile["email"]),
+            preferred_account_key=pending.get("account_key"),
+        )
+        account = _claim_google_admin_if_needed(account)
+        session_token = songzip_store.create_session(
+            account["id"],
+            user_agent=request.headers.get("user-agent"),
+        )
+        redirect = RedirectResponse(
+            url=_build_google_login_redirect_back(
+                request,
+                "connected",
+                f"Signed in with Google as {account['email']}.",
+            ),
+            status_code=303,
+        )
+        _set_songzip_session_cookie(redirect, session_token)
+        _migrate_subscription_state(
+            pending.get("account_key") or pending.get("client_id") or "",
+            account["account_key"],
+        )
+        return redirect
+    except (HTTPException, SongZipStoreError) as error:
+        detail = error.detail if isinstance(error, HTTPException) else str(error)
+        return RedirectResponse(
+            url=_build_google_login_redirect_back(request, "error", str(detail)),
+            status_code=303,
+        )
+
+
 @router.post("/api/account/register", response_model=None)
 def account_register(
     payload: AccountCredentialsRequest,
@@ -2395,6 +2773,7 @@ def account_register(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     _set_songzip_session_cookie(response, session_token)
+    account = _decorate_account(account) or account
     client.set_authenticated_account(account)
     client.subscription = client._load_subscription_state()
     return {
@@ -2426,6 +2805,7 @@ def account_login(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     _set_songzip_session_cookie(response, session_token)
+    account = _decorate_account(account) or account
     client.set_authenticated_account(account)
     client.subscription = _migrate_subscription_state(
         guest_account_key,
@@ -2458,6 +2838,41 @@ def account_logout(
         "authenticated": False,
         "account": None,
         "account_key": client.account_key,
+    }
+
+
+@router.post("/api/account/credits/grant", response_model=None)
+def grant_account_credits(
+    payload: AccountCreditGrantRequest,
+    request: Request,
+    client: Client = Depends(get_client),
+) -> Dict[str, Any]:
+    """
+    Grant extra free-tier song credits to a SongZip account.
+    """
+
+    _assert_admin_account(request)
+    try:
+        result = songzip_store.grant_bonus_credits(
+            payload.account_identifier,
+            payload.credits,
+        )
+    except SongZipStoreError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    granted_account = _decorate_account(result["account"]) or result["account"]
+    if granted_account["account_key"] == client.account_key:
+        client.subscription = client._load_subscription_state()
+        subscription = client.get_subscription_snapshot()
+    else:
+        subscription = _build_subscription_snapshot(
+            granted_account["account_key"],
+            result["subscription"],
+        )
+
+    return {
+        "account": granted_account,
+        "subscription": subscription,
     }
 
 
