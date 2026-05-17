@@ -2,6 +2,9 @@ const CLIENT_STORAGE_KEY = "songzip-client-id";
 const ACCOUNT_STORAGE_KEY = "songzip-account-key";
 const HEARTBEAT_MS = 20000;
 const RECONNECT_MS = 2500;
+const ASSET_VERSION = "v15";
+const SOCKET_CONNECT_TIMEOUT_MS = 6000;
+const POLL_REFRESH_MS = 8000;
 const BRAND_NAME = "SongZip";
 const PAYPAL_SDK_SRC =
   "https://www.paypal.com/sdk/js?client-id=BAAzAaVIHSG7fmLdqE0Pt97VUseA2jYJI8F3PaBILFmVMt2-h3OYOzqbsF9yvmsxizuydYQV4LKd1CDyIk&vault=true&intent=subscription";
@@ -173,6 +176,8 @@ const state = {
   ws: null,
   heartbeat: null,
   reconnectTimer: null,
+  socketConnectTimer: null,
+  pollTimer: null,
   installPromptEvent: null,
   pendingBanner: null,
   activePlan: "Basic",
@@ -194,7 +199,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initRevealAnimations();
   els.sessionValue.textContent = shortId(state.clientId);
   renderAccountIdentity();
-  showBanner("info", `Connecting to ${BRAND_NAME}...`);
+  setConnectionStatus("connecting");
+  showBanner("info", `Loading ${BRAND_NAME}...`);
   handleAuthCallbackResult();
   boot().catch((error) => {
     console.error(error);
@@ -403,6 +409,10 @@ async function boot() {
     }),
   ]);
   renderAll();
+  setConnectionStatus("ready");
+  if (!state.pendingBanner) {
+    showBanner("success", `${BRAND_NAME} is ready.`);
+  }
   registerServiceWorker();
   connectSocket();
   initBilling().catch((error) => {
@@ -1673,9 +1683,41 @@ function renderSearchResults(results) {
 }
 
 // Realtime connection
+function startPollingState() {
+  if (state.pollTimer) {
+    return;
+  }
+
+  state.pollTimer = window.setInterval(async () => {
+    try {
+      await loadSessionState();
+      renderState();
+    } catch (error) {
+      console.error("Polling refresh failed", error);
+    }
+  }, POLL_REFRESH_MS);
+}
+
+function stopPollingState() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+}
+
+function clearSocketConnectTimer() {
+  if (state.socketConnectTimer) {
+    clearTimeout(state.socketConnectTimer);
+    state.socketConnectTimer = null;
+  }
+}
+
 function connectSocket() {
   clearTimeout(state.reconnectTimer);
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+  if (
+    state.ws
+    && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)
+  ) {
     return;
   }
 
@@ -1685,8 +1727,28 @@ function connectSocket() {
   )}&account_key=${encodeURIComponent(state.accountKey)}`;
 
   state.ws = new WebSocket(socketUrl);
+  clearSocketConnectTimer();
+  state.socketConnectTimer = window.setTimeout(() => {
+    if (state.ws && state.ws.readyState === WebSocket.CONNECTING) {
+      try {
+        state.ws.close();
+      } catch (error) {
+        console.error("Could not close slow websocket", error);
+      }
+    }
+    setConnectionStatus("ready");
+    startPollingState();
+    if (!state.pendingBanner) {
+      showBanner(
+        "info",
+        `${BRAND_NAME} is ready. Live updates are taking longer than expected, so the page will refresh progress automatically.`
+      );
+    }
+  }, SOCKET_CONNECT_TIMEOUT_MS);
 
   state.ws.addEventListener("open", () => {
+    clearSocketConnectTimer();
+    stopPollingState();
     setConnectionStatus("connected");
     if (state.pendingBanner) {
       showBanner(state.pendingBanner.type, state.pendingBanner.message);
@@ -1717,11 +1779,16 @@ function connectSocket() {
   });
 
   state.ws.addEventListener("close", () => {
-    setConnectionStatus("disconnected");
+    clearSocketConnectTimer();
+    setConnectionStatus("ready");
+    startPollingState();
     if (state.suppressNextSocketCloseBanner) {
       state.suppressNextSocketCloseBanner = false;
     } else {
-      showBanner("error", `${BRAND_NAME} disconnected. Retrying automatically...`);
+      showBanner(
+        "info",
+        `${BRAND_NAME} will keep refreshing automatically while live updates reconnect.`
+      );
     }
     if (state.heartbeat) {
       clearInterval(state.heartbeat);
@@ -1731,7 +1798,9 @@ function connectSocket() {
   });
 
   state.ws.addEventListener("error", () => {
-    setConnectionStatus("disconnected");
+    clearSocketConnectTimer();
+    setConnectionStatus("ready");
+    startPollingState();
   });
 }
 
@@ -1883,7 +1952,10 @@ async function registerServiceWorker() {
   }
 
   try {
-    await navigator.serviceWorker.register("/sw.js");
+    const registration = await navigator.serviceWorker.register(`/sw.js?${ASSET_VERSION}`, {
+      updateViaCache: "none",
+    });
+    await registration.update().catch(() => {});
   } catch (error) {
     console.error("Service worker registration failed", error);
   }

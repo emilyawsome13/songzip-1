@@ -192,6 +192,10 @@ a {
   background: var(--good);
 }
 
+.connection-dot.ready {
+  background: var(--accent);
+}
+
 .connection-dot.disconnected {
   background: var(--bad);
 }
