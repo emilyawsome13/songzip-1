@@ -138,6 +138,37 @@ class SongZipStore:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
+    @property
+    def subscription_backup_root(self) -> Path:
+        root = self.database_path.parent / "subscription-backups"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _subscription_backup_path(self, account_key: str) -> Path:
+        return self.subscription_backup_root / f"{_normalize_account_key(account_key)}.json"
+
+    def _load_subscription_backup(self, account_key: str) -> Optional[Dict[str, Any]]:
+        backup_path = self._subscription_backup_path(account_key)
+        if not backup_path.is_file():
+            return None
+
+        try:
+            return json.loads(backup_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _save_subscription_backup(self, account_key: str, state: Dict[str, Any]) -> None:
+        backup_path = self._subscription_backup_path(account_key)
+        try:
+            backup_path.write_text(
+                json.dumps(state, ensure_ascii=True, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            raise SongZipStoreError(
+                "SongZip could not write the subscription backup file."
+            ) from error
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
@@ -673,11 +704,13 @@ class SongZipStore:
                 (normalized_key,),
             ).fetchone()
 
-        if row is None:
+        backup_state = self._load_subscription_backup(normalized_key) or {}
+        if row is None and not backup_state:
             return default_state
 
-        default_state.update(
-            {
+        row_state: Dict[str, Any] = {}
+        if row is not None:
+            row_state = {
                 "tier": row["tier"],
                 "downloads_used": int(row["downloads_used"] or 0),
                 "downloads_lifetime": int(row["downloads_lifetime"] or 0),
@@ -688,13 +721,33 @@ class SongZipStore:
                 "paypal_status": row["paypal_status"],
                 "updated_at": row["updated_at"],
             }
-        )
+
+        chosen_state = row_state
+        if backup_state:
+            row_updated_at = str(row_state.get("updated_at") or "")
+            backup_updated_at = str(backup_state.get("updated_at") or "")
+            if not row_state or backup_updated_at > row_updated_at:
+                chosen_state = backup_state
+
+        default_state.update(chosen_state)
+        default_state["membership_source"] = _resolve_membership_source(default_state)
         return default_state
 
     def save_subscription(self, account_key: str, state: Dict[str, Any]) -> None:
         normalized_key = _normalize_account_key(account_key)
         updated_at = _timestamp()
         resolved_membership_source = _resolve_membership_source(state)
+        persisted_state = {
+            "tier": state.get("tier", "free"),
+            "downloads_used": int(state.get("downloads_used", 0) or 0),
+            "downloads_lifetime": int(state.get("downloads_lifetime", 0) or 0),
+            "membership_source": resolved_membership_source,
+            "bonus_credits": int(state.get("bonus_credits", 0) or 0),
+            "subscription_id": state.get("subscription_id"),
+            "activated_at": state.get("activated_at"),
+            "paypal_status": state.get("paypal_status"),
+            "updated_at": updated_at,
+        }
         with self._managed_connection() as connection:
             connection.execute(
                 """
@@ -724,17 +777,18 @@ class SongZipStore:
                 """,
                 (
                     normalized_key,
-                    state.get("tier", "free"),
-                    int(state.get("downloads_used", 0) or 0),
-                    int(state.get("downloads_lifetime", 0) or 0),
+                    persisted_state["tier"],
+                    persisted_state["downloads_used"],
+                    persisted_state["downloads_lifetime"],
                     resolved_membership_source,
-                    int(state.get("bonus_credits", 0) or 0),
-                    state.get("subscription_id"),
-                    state.get("activated_at"),
-                    state.get("paypal_status"),
+                    persisted_state["bonus_credits"],
+                    persisted_state["subscription_id"],
+                    persisted_state["activated_at"],
+                    persisted_state["paypal_status"],
                     updated_at,
                 ),
             )
+        self._save_subscription_backup(normalized_key, persisted_state)
 
     def record_subscription_usage_event(
         self,

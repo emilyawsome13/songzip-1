@@ -155,6 +155,36 @@ class SongZipStoreTest(unittest.TestCase):
         self.assertEqual(downgraded["subscription"]["paypal_status"], "ADMIN_CANCELLED")
         self.assertEqual(downgraded_events[0]["details"]["new_tier"], "free")
 
+    def test_subscription_backup_restores_membership_when_row_is_missing(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_subscription(
+                "acct-backup",
+                {
+                    "tier": "pro",
+                    "downloads_used": 5,
+                    "downloads_lifetime": 105,
+                    "membership_source": "admin",
+                    "bonus_credits": 10000,
+                    "subscription_id": None,
+                    "activated_at": "2026-05-18T00:00:00-05:00",
+                    "paypal_status": "ADMIN_GRANTED",
+                },
+            )
+
+            with store._managed_connection() as connection:  # pylint: disable=protected-access
+                connection.execute(
+                    "DELETE FROM subscriptions WHERE account_key = ?",
+                    ("acct-backup",),
+                )
+
+            restored = store.load_subscription("acct-backup")
+
+        self.assertEqual(restored["tier"], "pro")
+        self.assertEqual(restored["membership_source"], "admin")
+        self.assertEqual(restored["bonus_credits"], 10000)
+        self.assertEqual(restored["downloads_lifetime"], 105)
+
 
 if __name__ == "__main__":
     unittest.main()
