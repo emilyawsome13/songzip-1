@@ -34,6 +34,8 @@ services:
         value: "2"
       - key: SPOTDL_YOUTUBE_DOWNLOAD_GAP_SECONDS
         value: "5"
+      - key: SONGZIP_DIRECT_YOUTUBE_SEARCH_FIRST
+        value: "true"
       - key: SPOTDL_YT_DLP_ARGS
         value: "--js-runtimes node --remote-components ejs:github --concurrent-fragments 2"
       - key: SPOTDL_LOG_LEVEL

@@ -6,6 +6,7 @@ from spotdl.download.downloader import Downloader
 from spotdl.providers.audio.base import AudioProvider, AudioProviderError
 from spotdl.types.result import Result
 from spotdl.types.song import Song
+from spotdl.utils.matching import calc_album_match
 from spotdl.utils.search import QueryError, create_ytm_artist, get_simple_songs
 
 
@@ -149,6 +150,87 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
 
         self.assertIn("node", provider.audio_handler.params["js_runtimes"])
         self.assertIn("ejs:github", provider.audio_handler.params["remote_components"])
+
+    def test_hosted_direct_youtube_links_prefer_search_before_direct_download(self):
+        downloader = Downloader.__new__(Downloader)
+        song = Song.from_missing_data(
+            name="Airplane pt.2",
+            artist="BTS",
+            artists=["BTS"],
+            download_url="https://www.youtube.com/watch?v=CxnJf0tWu48",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_DIRECT_YOUTUBE_SEARCH_FIRST": "true"},
+            clear=False,
+        ):
+            self.assertTrue(downloader._should_search_before_direct_download(song))
+
+    def test_local_direct_youtube_links_do_not_prefer_search_without_flag(self):
+        downloader = Downloader.__new__(Downloader)
+        song = Song.from_missing_data(
+            name="Airplane pt.2",
+            artist="BTS",
+            artists=["BTS"],
+            download_url="https://www.youtube.com/watch?v=CxnJf0tWu48",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_DIRECT_YOUTUBE_SEARCH_FIRST": "false"},
+            clear=False,
+        ):
+            self.assertFalse(downloader._should_search_before_direct_download(song))
+
+    def test_album_match_handles_missing_song_album_name(self):
+        song = Song.from_missing_data(
+            name="Airplane pt.2",
+            artist="BTS",
+            artists=["BTS"],
+        )
+        result = Result(
+            source="YouTubeMusic",
+            url="https://music.youtube.com/watch?v=RlgSeFSGXes",
+            verified=True,
+            name="Airplane pt.2 (Japanese ver.)",
+            duration=228,
+            author="BTS",
+            result_id="RlgSeFSGXes",
+            artists=("BTS",),
+            album="FACE YOURSELF",
+        )
+
+        self.assertEqual(calc_album_match(song, result), 0.0)
+
+    def test_direct_youtube_metadata_candidates_prefer_ytm_song_urls(self):
+        downloader = Downloader.__new__(Downloader)
+        song = Song.from_missing_data(
+            name="Airplane pt.2 (Japanese ver.)",
+            artist="BTS",
+            artists=["BTS"],
+            download_url="https://www.youtube.com/watch?v=CxnJf0tWu48",
+        )
+
+        with patch("spotdl.download.downloader.get_ytm_client") as mock_get_ytm_client:
+            mock_get_ytm_client.return_value.search.side_effect = [
+                [
+                    {"videoId": "RlgSeFSGXes"},
+                    {"videoId": "3J9G-PWo2oE"},
+                ],
+                [
+                    {"videoId": "CxnJf0tWu48"},
+                ],
+            ]
+
+            self.assertEqual(
+                downloader._direct_youtube_metadata_candidate_urls(song),
+                [
+                    "https://music.youtube.com/watch?v=RlgSeFSGXes",
+                    "https://music.youtube.com/watch?v=3J9G-PWo2oE",
+                    "https://www.youtube.com/watch?v=CxnJf0tWu48",
+                ],
+            )
 
     def test_youtube_link_falls_back_to_direct_metadata_when_spotify_lookup_fails(self):
         with patch("spotdl.utils.search.get_ytm_client") as mock_get_ytm_client:

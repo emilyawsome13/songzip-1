@@ -48,7 +48,12 @@ from spotdl.utils.formatter import create_file_name
 from spotdl.utils.lrc import generate_lrc
 from spotdl.utils.m3u import gen_m3u_files
 from spotdl.utils.metadata import MetadataError, embed_metadata
-from spotdl.utils.search import gather_known_songs, reinit_song, songs_from_albums
+from spotdl.utils.search import (
+    gather_known_songs,
+    get_ytm_client,
+    reinit_song,
+    songs_from_albums,
+)
 
 __all__ = [
     "AUDIO_PROVIDERS",
@@ -537,6 +542,57 @@ class Downloader:
 
         return max(interval, youtube_interval)
 
+    @staticmethod
+    def _is_hosted_render_environment() -> bool:
+        """
+        Check whether SongZip is running in a hosted Render-style environment.
+
+        ### Returns
+        - whether hosted environment heuristics are active
+        """
+
+        return any(
+            bool(os.environ.get(name))
+            for name in ("RENDER", "RENDER_EXTERNAL_HOSTNAME", "RENDER_SERVICE_ID")
+        )
+
+    @staticmethod
+    def _direct_youtube_search_first_enabled() -> bool:
+        """
+        Check whether hosted direct YouTube links should search for matched sources first.
+
+        ### Returns
+        - whether the search-first behavior is enabled
+        """
+
+        value = os.environ.get("SONGZIP_DIRECT_YOUTUBE_SEARCH_FIRST")
+        if value is not None:
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+
+        return Downloader._is_hosted_render_environment()
+
+    def _should_search_before_direct_download(self, song: Song) -> bool:
+        """
+        Decide whether provider search results should be tried before a direct URL.
+
+        ### Arguments
+        - song: song being downloaded
+
+        ### Returns
+        - whether SongZip should prefer metadata-matched sources first
+        """
+
+        if not self._direct_youtube_search_first_enabled():
+            return False
+
+        if not self._is_youtube_download_url(song.download_url):
+            return False
+
+        if not song.name or not (song.artists or song.artist):
+            return False
+
+        return len(self._youtube_alternate_watch_urls(song.download_url)) > 0
+
     def _wait_for_next_download_attempt(self, url: Optional[str] = None):
         """
         Add a small gap between yt-dlp download attempts to reduce YouTube bot checks.
@@ -556,6 +612,54 @@ class Downloader:
                     time.sleep(wait_seconds)
 
             self.last_download_request_at = time.monotonic()
+
+    def _direct_youtube_metadata_candidate_urls(self, song: Song) -> List[str]:
+        """
+        Search YouTube Music directly for candidate song URLs using extracted metadata.
+
+        ### Arguments
+        - song: song being downloaded
+
+        ### Returns
+        - ordered candidate URLs
+        """
+
+        title = (song.name or "").strip()
+        artists = [artist.strip() for artist in (song.artists or []) if artist and artist.strip()]
+        fallback_artist = (song.artist or "").strip()
+        if not artists and fallback_artist:
+            artists = [fallback_artist]
+
+        if not title or not artists:
+            return []
+
+        query = f"{', '.join(artists)} - {title}"
+        candidate_urls: List[str] = []
+
+        try:
+            client = get_ytm_client()
+            for result_filter in ("songs", "videos"):
+                results = client.search(query, filter=result_filter, limit=6) or []
+                for result in results:
+                    video_id = result.get("videoId")
+                    if not video_id:
+                        continue
+
+                    if result_filter == "songs":
+                        candidate_url = f"https://music.youtube.com/watch?v={video_id}"
+                    else:
+                        candidate_url = f"https://www.youtube.com/watch?v={video_id}"
+
+                    if candidate_url not in candidate_urls:
+                        candidate_urls.append(candidate_url)
+        except Exception as exc:  # pragma: no cover - defensive hosted fallback
+            logger.debug(
+                "Direct YouTube metadata candidate search failed for %s: %s",
+                song.display_name,
+                exc,
+            )
+
+        return candidate_urls
 
     @staticmethod
     def _youtube_alternate_watch_urls(url: Optional[str]) -> List[str]:
@@ -898,6 +1002,7 @@ class Downloader:
             attempted_download_urls = set()
             last_download_error: Optional[Exception] = None
             searched_for_fallback = False
+            prefer_search_before_direct = self._should_search_before_direct_download(song)
 
             def enqueue_download_url(candidate_url: Optional[str]):
                 if (
@@ -910,6 +1015,20 @@ class Downloader:
             def enqueue_alternate_watch_urls(candidate_url: Optional[str]):
                 for alternate_url in self._youtube_alternate_watch_urls(candidate_url):
                     enqueue_download_url(alternate_url)
+
+            if prefer_search_before_direct:
+                searched_for_fallback = True
+                searched_download_urls = self._direct_youtube_metadata_candidate_urls(song)
+
+                if len(searched_download_urls) == 0:
+                    try:
+                        searched_download_urls = self.search_all(song)
+                    except LookupError:
+                        searched_download_urls = []
+
+                for searched_download_url in searched_download_urls:
+                    enqueue_download_url(searched_download_url)
+                    enqueue_alternate_watch_urls(searched_download_url)
 
             enqueue_download_url(song.download_url)
             enqueue_alternate_watch_urls(song.download_url)

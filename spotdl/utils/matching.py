@@ -644,7 +644,7 @@ def calc_album_match(song: Song, result: Result) -> float:
     - album match percentage
     """
 
-    if not result.album:
+    if not result.album or not song.album_name:
         return 0.0
 
     return ratio(slugify(song.album_name), slugify(result.album))
