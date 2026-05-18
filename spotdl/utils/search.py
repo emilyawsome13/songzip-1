@@ -9,6 +9,7 @@ import concurrent.futures
 import json
 import logging
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -88,6 +89,183 @@ def _get_ytm_artist_url(browse_id: str) -> str:
 
     path_type = "channel" if browse_id.startswith("UC") else "browse"
     return f"https://music.youtube.com/{path_type}/{browse_id}"
+
+
+def _extract_youtube_video_id(url: str) -> Optional[str]:
+    """
+    Extract a single YouTube video id from common YouTube URL forms.
+
+    ### Arguments
+    - url: the source URL
+
+    ### Returns
+    - video id if present
+    """
+
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path or ""
+
+    if host.endswith("youtu.be"):
+        candidate = path.lstrip("/").split("/", 1)[0]
+        return candidate or None
+
+    if "youtube.com" not in host:
+        return None
+
+    if path == "/watch":
+        values = urllib.parse.parse_qs(parsed.query).get("v") or []
+        return values[0].strip() if values else None
+
+    if path.startswith("/shorts/"):
+        candidate = path.split("/shorts/", 1)[1].split("/", 1)[0]
+        return candidate or None
+
+    return None
+
+
+def _youtube_video_fallback_metadata(url: str) -> Dict[str, Any]:
+    """
+    Read basic YouTube video metadata through yt-dlp when YT Music is incomplete.
+
+    ### Arguments
+    - url: source url
+
+    ### Returns
+    - metadata dictionary
+    """
+
+    from yt_dlp import YoutubeDL
+
+    with YoutubeDL(
+        {
+            "quiet": True,
+            "extract_flat": True,
+            "skip_download": True,
+            "playlistend": 1,
+        }
+    ) as ydl:
+        info = ydl.extract_info(url, download=False) or {}
+
+    return info if isinstance(info, dict) else {}
+
+
+def _build_direct_youtube_song(url: str, use_ytm_data: bool = False) -> Song:
+    """
+    Build a single Song object from a direct YouTube video URL.
+
+    ### Arguments
+    - url: YouTube video URL
+    - use_ytm_data: whether to force YouTube metadata over Spotify metadata
+
+    ### Returns
+    - Song object representing the single video
+    """
+
+    video_id = _extract_youtube_video_id(url)
+    if not video_id:
+        raise QueryError(f"Couldn't resolve a YouTube video id from {url}")
+
+    is_youtube_music_url = "music.youtube.com" in url
+    canonical_url = (
+        f"https://music.youtube.com/watch?v={video_id}"
+        if is_youtube_music_url
+        else f"https://www.youtube.com/watch?v={video_id}"
+    )
+    track_data = get_ytm_client().get_song(video_id)
+    video_details = track_data.get("videoDetails") or {}
+
+    fallback_info: Dict[str, Any] = {}
+    title = video_details.get("title") or track_data.get("title")
+    author = video_details.get("author") or track_data.get("author")
+    thumbnails = video_details.get("thumbnail", {}).get("thumbnails") or []
+    duration_seconds = (
+        track_data.get("lengthSeconds")
+        or video_details.get("lengthSeconds")
+    )
+
+    if not author or not title:
+        playability_status = track_data.get("playabilityStatus") or {}
+        reason = playability_status.get("reason")
+        if is_youtube_music_url and reason:
+            raise QueryError(
+                f"Couldn't read YouTube Music metadata for {url}: {reason}"
+            )
+
+        fallback_info = _youtube_video_fallback_metadata(canonical_url)
+        title = title or fallback_info.get("title")
+        author = (
+            author
+            or fallback_info.get("channel")
+            or fallback_info.get("uploader")
+            or fallback_info.get("channel_handle")
+        )
+        thumbnails = thumbnails or fallback_info.get("thumbnails") or []
+        duration_seconds = duration_seconds or fallback_info.get("duration")
+
+    if not author or not title:
+        playability_status = track_data.get("playabilityStatus") or {}
+        reason = playability_status.get("reason")
+        if reason:
+            raise QueryError(
+                f"Couldn't read {'YouTube Music' if is_youtube_music_url else 'YouTube'} metadata for {url}: {reason}"
+            )
+
+        raise QueryError(
+            f"Couldn't read {'YouTube Music' if is_youtube_music_url else 'YouTube'} metadata for {url}"
+        )
+
+    try:
+        youtube_song = Song.from_search_term(f"{author} - {title}")
+    except Exception:  # pylint: disable=broad-except
+        youtube_song = Song.from_missing_data(
+            name=title,
+            artists=[author],
+            artist=author,
+            genres=[],
+            disc_number=1,
+            disc_count=1,
+            album_name=author,
+            album_artist=author,
+            duration=int(duration_seconds or 0),
+            year=0,
+            date="",
+            track_number=1,
+            tracks_count=1,
+            song_id=video_id,
+            explicit=False,
+            publisher="",
+            url=canonical_url,
+            isrc=None,
+            cover_url=(
+                thumbnails[-1].get("url")
+                if thumbnails and isinstance(thumbnails[-1], dict)
+                else None
+            ),
+        )
+
+    if use_ytm_data or youtube_song.url == canonical_url:
+        youtube_song.name = title
+        youtube_song.artist = author
+        youtube_song.artists = [author]
+        youtube_song.album_name = youtube_song.album_name or author
+        youtube_song.album_artist = youtube_song.album_artist or author
+        if duration_seconds is not None:
+            youtube_song.duration = int(duration_seconds)
+        if youtube_song.song_id in (None, "", "None"):
+            youtube_song.song_id = video_id
+        if youtube_song.cover_url is None and thumbnails:
+            youtube_song.cover_url = (
+                thumbnails[-1].get("url")
+                if isinstance(thumbnails[-1], dict)
+                else None
+            )
+
+    youtube_song.download_url = canonical_url
+    if not youtube_song.url:
+        youtube_song.url = canonical_url
+
+    return youtube_song
 
 
 def _get_ytm_artist_browse_id(request: str) -> Optional[str]:
@@ -725,41 +903,8 @@ def get_simple_songs(
             songs.append(
                 Song.from_missing_data(url=split_urls[1], download_url=split_urls[0])
             )
-        elif "music.youtube.com/watch?v" in request:
-            video_id = request.split("?v=", 1)[1].split("&", 1)[0]
-            track_data = get_ytm_client().get_song(video_id)
-            video_details = track_data.get("videoDetails") or {}
-            author = video_details.get("author") or track_data.get("author")
-            title = video_details.get("title") or track_data.get("title")
-
-            if not author or not title:
-                playability_status = track_data.get("playabilityStatus") or {}
-                reason = playability_status.get("reason")
-                if reason:
-                    raise QueryError(
-                        f"Couldn't read YouTube Music metadata for {request}: {reason}"
-                    )
-
-                raise QueryError(
-                    f"Couldn't read YouTube Music metadata for {request}"
-                )
-
-            yt_song = Song.from_search_term(f"{author} - {title}")
-
-            if use_ytm_data:
-                yt_song.name = title
-                yt_song.artist = author
-                yt_song.artists = [author]
-
-                duration_seconds = (
-                    track_data.get("lengthSeconds")
-                    or video_details.get("lengthSeconds")
-                )
-                if duration_seconds is not None:
-                    yt_song.duration = int(duration_seconds)
-
-            yt_song.download_url = request
-            songs.append(yt_song)
+        elif "music.youtube.com/watch?v" in request or _extract_youtube_video_id(request):
+            songs.append(_build_direct_youtube_song(request, use_ytm_data=use_ytm_data))
         elif (
             "youtube.com/playlist?list=" in request
             or "youtube.com/browse/VLPL" in request

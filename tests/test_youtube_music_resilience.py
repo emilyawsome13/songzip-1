@@ -85,6 +85,65 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
 
         self.assertIn("Sign in to confirm you're not a bot", str(error.exception))
 
+    def test_youtu_be_link_resolves_as_single_song(self):
+        song_stub = Song.from_missing_data(
+            name="Placeholder",
+            artist="Placeholder Artist",
+            artists=["Placeholder Artist"],
+        )
+
+        with patch("spotdl.utils.search.get_ytm_client") as mock_get_ytm_client:
+            mock_get_ytm_client.return_value.get_song.return_value = {
+                "videoDetails": {
+                    "title": "Test Song",
+                    "author": "Test Artist",
+                    "lengthSeconds": "187",
+                }
+            }
+
+            with patch(
+                "spotdl.utils.search.Song.from_search_term",
+                return_value=song_stub,
+            ) as mock_from_search:
+                songs = get_simple_songs(
+                    ["https://youtu.be/9jI2CZ0bMuM?si=IF5YsIBvKQFYCsrH"],
+                )
+
+        mock_from_search.assert_called_once_with("Test Artist - Test Song")
+        self.assertEqual(len(songs), 1)
+        self.assertEqual(
+            songs[0].download_url,
+            "https://www.youtube.com/watch?v=9jI2CZ0bMuM",
+        )
+
+    def test_youtube_link_falls_back_to_direct_metadata_when_spotify_lookup_fails(self):
+        with patch("spotdl.utils.search.get_ytm_client") as mock_get_ytm_client:
+            mock_get_ytm_client.return_value.get_song.return_value = {
+                "videoDetails": {
+                    "title": "Fallback Song",
+                    "author": "Fallback Artist",
+                    "lengthSeconds": "245",
+                    "thumbnail": {"thumbnails": [{"url": "https://img.test/cover.jpg"}]},
+                }
+            }
+
+            with patch(
+                "spotdl.utils.search.Song.from_search_term",
+                side_effect=QueryError("spotify unavailable"),
+            ):
+                songs = get_simple_songs(
+                    ["https://www.youtube.com/watch?v=9jI2CZ0bMuM"],
+                )
+
+        self.assertEqual(len(songs), 1)
+        self.assertEqual(songs[0].name, "Fallback Song")
+        self.assertEqual(songs[0].artist, "Fallback Artist")
+        self.assertEqual(songs[0].duration, 245)
+        self.assertEqual(
+            songs[0].download_url,
+            "https://www.youtube.com/watch?v=9jI2CZ0bMuM",
+        )
+
     def test_best_result_ignores_view_lookup_failures(self):
         provider = DummyAudioProvider(output_format="mp3")
         results = {
