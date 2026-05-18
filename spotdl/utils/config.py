@@ -63,6 +63,11 @@ def get_spotdl_path() -> Path:
         os.makedirs(override_path, exist_ok=True)
         return override_path
 
+    render_persistent_path = Path("/var/data/songzip")
+    if platform.system() == "Linux" and render_persistent_path.exists():
+        os.makedirs(render_persistent_path, exist_ok=True)
+        return render_persistent_path
+
     home_dir = Path(os.path.expanduser("~"))
 
     # For Linux systems, we follow the XDG Base Directory Specification

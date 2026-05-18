@@ -145,10 +145,12 @@ class SongZipStoreTest(unittest.TestCase):
             downgraded_events = store.list_subscription_usage_events(account["account_key"])
 
         self.assertEqual(upgraded["subscription"]["tier"], "plus")
+        self.assertEqual(upgraded["subscription"]["membership_source"], "admin")
         self.assertEqual(upgraded["subscription"]["paypal_status"], "ADMIN_GRANTED")
         self.assertEqual(upgraded_events[0]["event_type"], "membership_changed")
         self.assertEqual(upgraded_events[0]["details"]["new_tier"], "plus")
         self.assertEqual(downgraded["subscription"]["tier"], "free")
+        self.assertEqual(downgraded["subscription"]["membership_source"], "free")
         self.assertIsNone(downgraded["subscription"]["subscription_id"])
         self.assertEqual(downgraded["subscription"]["paypal_status"], "ADMIN_CANCELLED")
         self.assertEqual(downgraded_events[0]["details"]["new_tier"], "free")

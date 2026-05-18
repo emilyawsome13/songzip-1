@@ -32,6 +32,7 @@ PASSWORD_ITERATIONS = 240_000
 GOOGLE_PASSWORD_PLACEHOLDER = "oauth_google"
 ADMIN_ACCOUNT_META_KEY = "songzip_admin_account_key"
 SUPPORTED_MEMBERSHIP_TIERS = {"free", "basic", "plus", "pro"}
+SUPPORTED_MEMBERSHIP_SOURCES = {"free", "paypal", "admin"}
 
 
 class SongZipStoreError(Exception):
@@ -55,6 +56,36 @@ def _normalize_account_key(value: Optional[str]) -> str:
 
 def _normalize_email(value: Optional[str]) -> str:
     return str(value or "").strip().lower()
+
+
+def _resolve_membership_source(state: Dict[str, Any]) -> str:
+    raw_source = str(state.get("membership_source", "") or "").strip().lower()
+    tier = str(state.get("tier", "free") or "free").strip().lower()
+    paypal_status = str(state.get("paypal_status", "") or "").strip().upper()
+    subscription_id = str(state.get("subscription_id", "") or "").strip()
+
+    if raw_source in SUPPORTED_MEMBERSHIP_SOURCES:
+        if raw_source != "free" or tier == "free":
+            return raw_source
+
+    if tier == "free":
+        return "free"
+
+    if paypal_status.startswith("ADMIN_"):
+        return "admin"
+
+    if subscription_id or paypal_status in {
+        "ACTIVE",
+        "APPROVAL_PENDING",
+        "APPROVED",
+        "LOCAL_APPROVED",
+        "CANCELLED",
+        "SUSPENDED",
+        "EXPIRED",
+    }:
+        return "paypal"
+
+    return "paypal"
 
 
 def _make_password_hash(password: str) -> str:
@@ -165,6 +196,7 @@ class SongZipStore:
                     tier TEXT NOT NULL,
                     downloads_used INTEGER NOT NULL,
                     downloads_lifetime INTEGER NOT NULL DEFAULT 0,
+                    membership_source TEXT NOT NULL DEFAULT 'free',
                     subscription_id TEXT,
                     activated_at TEXT,
                     paypal_status TEXT,
@@ -219,6 +251,12 @@ class SongZipStore:
                 "subscriptions",
                 "downloads_lifetime",
                 "INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                connection,
+                "subscriptions",
+                "membership_source",
+                "TEXT NOT NULL DEFAULT 'free'",
             )
             connection.execute(
                 """
@@ -621,6 +659,7 @@ class SongZipStore:
             "tier": "free",
             "downloads_used": 0,
             "downloads_lifetime": 0,
+            "membership_source": "free",
             "bonus_credits": 0,
             "subscription_id": None,
             "activated_at": None,
@@ -642,6 +681,7 @@ class SongZipStore:
                 "tier": row["tier"],
                 "downloads_used": int(row["downloads_used"] or 0),
                 "downloads_lifetime": int(row["downloads_lifetime"] or 0),
+                "membership_source": _resolve_membership_source(dict(row)),
                 "bonus_credits": int(row["bonus_credits"] or 0),
                 "subscription_id": row["subscription_id"],
                 "activated_at": row["activated_at"],
@@ -654,6 +694,7 @@ class SongZipStore:
     def save_subscription(self, account_key: str, state: Dict[str, Any]) -> None:
         normalized_key = _normalize_account_key(account_key)
         updated_at = _timestamp()
+        resolved_membership_source = _resolve_membership_source(state)
         with self._managed_connection() as connection:
             connection.execute(
                 """
@@ -662,17 +703,19 @@ class SongZipStore:
                     tier,
                     downloads_used,
                     downloads_lifetime,
+                    membership_source,
                     bonus_credits,
                     subscription_id,
                     activated_at,
                     paypal_status,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_key) DO UPDATE SET
                     tier = excluded.tier,
                     downloads_used = excluded.downloads_used,
                     downloads_lifetime = excluded.downloads_lifetime,
+                    membership_source = excluded.membership_source,
                     bonus_credits = excluded.bonus_credits,
                     subscription_id = excluded.subscription_id,
                     activated_at = excluded.activated_at,
@@ -684,6 +727,7 @@ class SongZipStore:
                     state.get("tier", "free"),
                     int(state.get("downloads_used", 0) or 0),
                     int(state.get("downloads_lifetime", 0) or 0),
+                    resolved_membership_source,
                     int(state.get("bonus_credits", 0) or 0),
                     state.get("subscription_id"),
                     state.get("activated_at"),
@@ -823,12 +867,12 @@ class SongZipStore:
         subscription = self.load_subscription(account["account_key"])
         previous_tier = str(subscription.get("tier", "free")).strip().lower()
         subscription["tier"] = normalized_tier
+        subscription["membership_source"] = "admin" if normalized_tier != "free" else "free"
         subscription["activated_at"] = _timestamp() if normalized_tier != "free" else None
         subscription["paypal_status"] = (
             "ADMIN_GRANTED" if normalized_tier != "free" else "ADMIN_CANCELLED"
         )
-        if normalized_tier == "free":
-            subscription["subscription_id"] = None
+        subscription["subscription_id"] = None
 
         self.save_subscription(account["account_key"], subscription)
         self.record_subscription_usage_event(

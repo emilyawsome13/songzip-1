@@ -643,6 +643,13 @@ async function loadSessionState() {
 
 async function loadAccountMe() {
   state.account = await api(withClient("/api/account/me"));
+  const resolvedAccountKey = normalizeAccountKey(
+    state.account?.account?.account_key || state.account?.account_key || ""
+  );
+  if (resolvedAccountKey && resolvedAccountKey !== state.accountKey) {
+    state.accountKey = resolvedAccountKey;
+    window.localStorage.setItem(ACCOUNT_STORAGE_KEY, resolvedAccountKey);
+  }
 }
 
 async function loadSettings() {
@@ -789,7 +796,9 @@ function renderSubscription(subscription) {
 }
 
 function renderAccountIdentity(account = null) {
-  const key = normalizeAccountKey(account?.key || state.accountKey);
+  const key = normalizeAccountKey(
+    account?.key || account?.account_key || state.account?.account?.account_key || state.accountKey
+  );
   if (key && key !== state.accountKey) {
     state.accountKey = key;
     window.localStorage.setItem(ACCOUNT_STORAGE_KEY, key);

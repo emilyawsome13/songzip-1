@@ -252,6 +252,7 @@ def _default_subscription_state() -> Dict[str, Any]:
         "tier": "free",
         "downloads_used": 0,
         "downloads_lifetime": 0,
+        "membership_source": "free",
         "bonus_credits": 0,
         "subscription_id": None,
         "activated_at": None,
@@ -337,6 +338,7 @@ def _build_subscription_snapshot(
         "tier": tier,
         "downloads_used": used,
         "downloads_lifetime": lifetime_downloads,
+        "membership_source": str(state.get("membership_source", "free")).strip().lower(),
         "bonus_credits": max(0, int(state.get("bonus_credits", 0) or 0)),
         "limit": limit,
         "remaining": remaining,
@@ -416,6 +418,9 @@ def _subscription_state_has_usage_or_payment(state: Optional[Dict[str, Any]]) ->
         return True
 
     if int(state.get("bonus_credits", 0) or 0) > 0:
+        return True
+
+    if str(state.get("membership_source", "free")).strip().lower() != "free":
         return True
 
     return bool(state.get("subscription_id") or state.get("paypal_status"))
@@ -521,6 +526,13 @@ def _migrate_subscription_state(source_key: str, target_key: str) -> Dict[str, A
             source_state.get("paypal_status")
             or target_state.get("paypal_status")
         )
+        merged_state["membership_source"] = (
+            str(source_state.get("membership_source", "free")).strip().lower()
+        )
+    else:
+        merged_state["membership_source"] = (
+            str(target_state.get("membership_source", "free")).strip().lower()
+        )
 
     _save_subscription_state_for_key(normalized_target, merged_state)
     try:
@@ -578,14 +590,42 @@ def _sync_subscription_state_from_record(record: Dict[str, Any]):
 
     status = str(record.get("status", "LOCAL_APPROVED")).strip().upper()
     state = _load_subscription_state_for_key(account_key)
+    membership_source = str(state.get("membership_source", "free")).strip().lower()
+    current_subscription_id = str(state.get("subscription_id") or "").strip()
+    record_subscription_id = str(record.get("subscription_id") or "").strip()
+
+    if membership_source == "admin" and (
+        not current_subscription_id or current_subscription_id != record_subscription_id
+    ):
+        try:
+            songzip_store.record_subscription_usage_event(
+                account_key,
+                "paypal_subscription_sync_ignored",
+                tier=state.get("tier"),
+                subscription_id=record.get("subscription_id"),
+                details={
+                    "status": status,
+                    "plan_id": record.get("plan_id"),
+                    "reason": "admin_membership_override",
+                },
+            )
+        except (OSError, SongZipStoreError):
+            app_state.logger.debug(
+                "Could not save ignored PayPal sync event for %s",
+                account_key,
+            )
+        return
+
     state["paypal_status"] = status
 
     if status in {"ACTIVE", "APPROVAL_PENDING", "APPROVED", "LOCAL_APPROVED"}:
         state["tier"] = tier
+        state["membership_source"] = "paypal" if tier != "free" else "free"
         state["subscription_id"] = record.get("subscription_id")
         state["activated_at"] = record.get("activated_at") or state.get("activated_at") or _timestamp_now()
     else:
         state["tier"] = "free"
+        state["membership_source"] = "free"
         state["subscription_id"] = None
         state["activated_at"] = None
 
@@ -815,12 +855,18 @@ def _set_songzip_session_cookie(response: Response, session_token: str):
     - session_token: raw session token
     """
 
+    secure_cookie = bool(
+        os.environ.get("SONGZIP_COOKIE_SECURE")
+        or os.environ.get("RENDER")
+        or os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+    )
+
     response.set_cookie(
         SONGZIP_SESSION_COOKIE,
         session_token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=secure_cookie,
         max_age=60 * 60 * 24 * 30,
         path="/",
     )
@@ -1489,6 +1535,9 @@ class Client:
             raise HTTPException(status_code=400, detail="Unsupported subscription tier.")
 
         self.subscription["tier"] = normalized_tier
+        self.subscription["membership_source"] = (
+            "paypal" if normalized_tier != "free" else "free"
+        )
         self.subscription["subscription_id"] = subscription_id
         self.subscription["activated_at"] = self._timestamp()
         self.subscription["paypal_status"] = (

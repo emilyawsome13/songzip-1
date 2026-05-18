@@ -138,6 +138,37 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(loaded["tier"], "free")
         self.assertEqual(loaded["subscription_id"], None)
 
+    def test_paypal_sync_does_not_override_admin_membership(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_subscription(
+                "acct-admin-member",
+                {
+                    "tier": "pro",
+                    "downloads_used": 0,
+                    "downloads_lifetime": 0,
+                    "membership_source": "admin",
+                    "bonus_credits": 0,
+                    "subscription_id": None,
+                    "activated_at": "2026-05-17T00:00:00-05:00",
+                    "paypal_status": "ADMIN_GRANTED",
+                },
+            )
+            with patch("spotdl.utils.web.songzip_store", store):
+                _sync_subscription_state_from_record(
+                    {
+                        "subscription_id": "sub_old",
+                        "account_key": "acct-admin-member",
+                        "tier": "free",
+                        "status": "CANCELLED",
+                    }
+                )
+                loaded = _load_subscription_state_for_key("acct-admin-member")
+
+        self.assertEqual(loaded["tier"], "pro")
+        self.assertEqual(loaded["membership_source"], "admin")
+        self.assertEqual(loaded["paypal_status"], "ADMIN_GRANTED")
+
     def test_guest_subscription_state_migrates_into_authenticated_account_key(self):
         with TemporaryDirectory() as temp_dir:
             store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
@@ -183,6 +214,7 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(migrated["tier"], "plus")
         self.assertEqual(migrated["downloads_used"], 18)
         self.assertEqual(migrated["downloads_lifetime"], 33)
+        self.assertEqual(migrated["membership_source"], "paypal")
         self.assertEqual(migrated["subscription_id"], "sub_live")
         self.assertEqual(guest_after["tier"], "free")
         self.assertEqual(record["account_key"], "acct-user")
