@@ -158,6 +158,7 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
             artist="BTS",
             artists=["BTS"],
             download_url="https://www.youtube.com/watch?v=CxnJf0tWu48",
+            source_hint="direct_youtube_video",
         )
 
         with patch.dict(
@@ -174,11 +175,29 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
             artist="BTS",
             artists=["BTS"],
             download_url="https://www.youtube.com/watch?v=CxnJf0tWu48",
+            source_hint="direct_youtube_video",
         )
 
         with patch.dict(
             "os.environ",
             {"SONGZIP_DIRECT_YOUTUBE_SEARCH_FIRST": "false"},
+            clear=False,
+        ):
+            self.assertFalse(downloader._should_search_before_direct_download(song))
+
+    def test_artist_resolved_youtube_music_song_does_not_trigger_search_first(self):
+        downloader = Downloader.__new__(Downloader)
+        song = Song.from_missing_data(
+            name="Sail",
+            artist="Vahtang beatbox",
+            artists=["Vahtang beatbox"],
+            url="https://music.youtube.com/watch?v=fu76YbA5aOs",
+            download_url="https://music.youtube.com/watch?v=fu76YbA5aOs",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_DIRECT_YOUTUBE_SEARCH_FIRST": "true"},
             clear=False,
         ):
             self.assertFalse(downloader._should_search_before_direct_download(song))

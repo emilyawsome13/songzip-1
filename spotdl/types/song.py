@@ -61,6 +61,7 @@ class Song:
     list_length: Optional[int] = None
     artist_id: Optional[str] = None
     album_type: Optional[str] = None
+    source_hint: Optional[str] = None
 
     @classmethod
     def from_url(cls, url: str) -> "Song":

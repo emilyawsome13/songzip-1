@@ -585,6 +585,9 @@ class Downloader:
         if not self._direct_youtube_search_first_enabled():
             return False
 
+        if str(getattr(song, "source_hint", "") or "").strip().lower() != "direct_youtube_video":
+            return False
+
         if not self._is_youtube_download_url(song.download_url):
             return False
 

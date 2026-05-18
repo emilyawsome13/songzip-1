@@ -2042,11 +2042,12 @@ class Client:
         )
         failed = len([song for song in song_list if song.get("status") == "error"])
         skipped = len([song for song in song_list if song.get("status") == "skipped"])
+        queued = len([song for song in song_list if song.get("status") == "queued"])
         active = len(
             [
                 song
                 for song in song_list
-                if song.get("status") not in {"done", "error", "skipped"}
+                if song.get("status") in {"downloading", "converting", "embedding"}
             ]
         )
         progress = (
@@ -2082,6 +2083,7 @@ class Client:
                 "completed": completed,
                 "failed": failed,
                 "skipped": skipped,
+                "queued": queued,
                 "active": active,
                 "progress": progress,
             },

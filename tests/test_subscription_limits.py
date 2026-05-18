@@ -275,6 +275,54 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(client.subscription["tier"], "pro")
         self.assertEqual(client.subscription["membership_source"], "admin")
 
+    def test_session_snapshot_active_count_excludes_queued_songs(self):
+        client = Client.__new__(Client)
+        client.client_id = "snapshot-client"
+        client.account_key = "acct-member"
+        client.authenticated_account = None
+        client.current_job = {
+            "status": "running",
+            "resolved_count": 4,
+            "output_root": "downloads",
+        }
+        client.subscription = {
+            "tier": "pro",
+            "downloads_used": 0,
+            "downloads_lifetime": 0,
+            "membership_source": "admin",
+            "bonus_credits": 0,
+            "subscription_id": None,
+            "activated_at": None,
+            "paypal_status": "ADMIN_GRANTED",
+        }
+        client.completed_downloads = []
+        client.download_bundle = None
+        client.events = []
+        client.latest_update = None
+        client.get_output_root = lambda: "downloads"  # type: ignore[method-assign]
+        client.get_subscription_snapshot = lambda: {  # type: ignore[method-assign]
+            "tier": "pro",
+            "account_key": "acct-member",
+        }
+        client.song_states = {
+            "a": {"status": "queued", "progress": 0, "queue_position": 1},
+            "b": {"status": "queued", "progress": 0, "queue_position": 2},
+            "c": {"status": "downloading", "progress": 12, "queue_position": 3},
+            "d": {"status": "done", "progress": 100, "queue_position": 4},
+        }
+
+        with patch("spotdl.utils.web.app_state") as mock_app_state:
+            mock_app_state.web_settings = {
+                "host": "0.0.0.0",
+                "port": 10000,
+                "keep_alive": True,
+                "web_use_output_dir": False,
+            }
+            snapshot = client.get_state_snapshot()
+
+        self.assertEqual(snapshot["stats"]["queued"], 2)
+        self.assertEqual(snapshot["stats"]["active"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

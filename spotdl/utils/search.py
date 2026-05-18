@@ -264,6 +264,7 @@ def _build_direct_youtube_song(url: str, use_ytm_data: bool = False) -> Song:
     youtube_song.download_url = canonical_url
     if not youtube_song.url:
         youtube_song.url = canonical_url
+    youtube_song.source_hint = "direct_youtube_video"
 
     return youtube_song
 
