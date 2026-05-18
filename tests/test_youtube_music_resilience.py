@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from spotdl.console.entry_point import _disable_blocked_ytmusic_provider
+from spotdl.download.downloader import Downloader
 from spotdl.providers.audio.base import AudioProvider, AudioProviderError
 from spotdl.types.result import Result
 from spotdl.types.song import Song
@@ -115,6 +116,39 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
             songs[0].download_url,
             "https://www.youtube.com/watch?v=9jI2CZ0bMuM",
         )
+
+    def test_direct_youtube_watch_url_adds_music_watch_retry(self):
+        self.assertEqual(
+            Downloader._youtube_alternate_watch_urls(
+                "https://www.youtube.com/watch?v=9jI2CZ0bMuM"
+            ),
+            ["https://music.youtube.com/watch?v=9jI2CZ0bMuM"],
+        )
+
+    def test_direct_music_watch_url_adds_regular_youtube_retry(self):
+        self.assertEqual(
+            Downloader._youtube_alternate_watch_urls(
+                "https://music.youtube.com/watch?v=9jI2CZ0bMuM"
+            ),
+            ["https://www.youtube.com/watch?v=9jI2CZ0bMuM"],
+        )
+
+    def test_short_youtube_url_adds_both_watch_variants(self):
+        self.assertEqual(
+            Downloader._youtube_alternate_watch_urls("https://youtu.be/9jI2CZ0bMuM"),
+            [
+                "https://music.youtube.com/watch?v=9jI2CZ0bMuM",
+                "https://www.youtube.com/watch?v=9jI2CZ0bMuM",
+            ],
+        )
+
+    def test_audio_provider_accepts_js_runtime_and_ejs_remote_component_args(self):
+        provider = DummyAudioProvider(
+            yt_dlp_args="--js-runtimes node --remote-components ejs:github"
+        )
+
+        self.assertIn("node", provider.audio_handler.params["js_runtimes"])
+        self.assertIn("ejs:github", provider.audio_handler.params["remote_components"])
 
     def test_youtube_link_falls_back_to_direct_metadata_when_spotify_lookup_fails(self):
         with patch("spotdl.utils.search.get_ytm_client") as mock_get_ytm_client:

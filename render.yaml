@@ -32,8 +32,10 @@ services:
         value: "3"
       - key: SPOTDL_DOWNLOAD_GAP_SECONDS
         value: "2"
+      - key: SPOTDL_YOUTUBE_DOWNLOAD_GAP_SECONDS
+        value: "5"
       - key: SPOTDL_YT_DLP_ARGS
-        value: "--concurrent-fragments 2 --extractor-args youtube:player_client=web"
+        value: "--js-runtimes node --remote-components ejs:github --concurrent-fragments 2"
       - key: SPOTDL_LOG_LEVEL
         value: INFO
       - key: SPOTDL_CLIENT_ID

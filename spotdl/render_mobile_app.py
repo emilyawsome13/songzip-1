@@ -131,7 +131,7 @@ def _build_downloader_settings(web_settings: WebOptions) -> DownloaderOptions:
             "threads": _env_int("SPOTDL_THREADS", 3),
             "yt_dlp_args": os.environ.get(
                 "SPOTDL_YT_DLP_ARGS",
-                "--concurrent-fragments 2 --extractor-args youtube:player_client=web",
+                "--js-runtimes node --remote-components ejs:github --concurrent-fragments 2",
             ),
             "simple_tui": True,
             "log_level": log_level,

@@ -494,16 +494,60 @@ class Downloader:
 
         return results
 
-    def _wait_for_next_download_attempt(self):
+    @staticmethod
+    def _is_youtube_download_url(url: Optional[str]) -> bool:
+        """
+        Check whether a download URL points at a YouTube host.
+
+        ### Arguments
+        - url: candidate download URL
+
+        ### Returns
+        - whether the URL points at YouTube
+        """
+
+        if not url:
+            return False
+
+        host = urlparse(url).netloc.lower()
+        return host.endswith("youtube.com") or host.endswith("youtu.be")
+
+    def _target_download_interval_seconds(self, url: Optional[str]) -> float:
+        """
+        Resolve the delay to apply before the next yt-dlp request.
+
+        ### Arguments
+        - url: candidate download URL
+
+        ### Returns
+        - recommended delay in seconds
+        """
+
+        interval = max(0.0, self.download_request_interval_seconds)
+        if not self._is_youtube_download_url(url):
+            return interval
+
+        try:
+            youtube_interval = max(
+                0.0,
+                float(os.environ.get("SPOTDL_YOUTUBE_DOWNLOAD_GAP_SECONDS", "5")),
+            )
+        except ValueError:
+            youtube_interval = 5.0
+
+        return max(interval, youtube_interval)
+
+    def _wait_for_next_download_attempt(self, url: Optional[str] = None):
         """
         Add a small gap between yt-dlp download attempts to reduce YouTube bot checks.
         """
 
         with self.download_request_lock:
             now = time.monotonic()
+            target_interval = self._target_download_interval_seconds(url)
             if self.last_download_request_at is not None:
                 elapsed = now - self.last_download_request_at
-                wait_seconds = self.download_request_interval_seconds - elapsed
+                wait_seconds = target_interval - elapsed
                 if wait_seconds > 0:
                     logger.debug(
                         "Sleeping %.1f seconds before next yt-dlp request",
@@ -514,32 +558,44 @@ class Downloader:
             self.last_download_request_at = time.monotonic()
 
     @staticmethod
-    def _youtube_music_fallback_url(url: Optional[str]) -> Optional[str]:
+    def _youtube_alternate_watch_urls(url: Optional[str]) -> List[str]:
         """
-        Convert a YouTube Music watch URL to a regular YouTube watch URL.
+        Build alternate YouTube watch URLs for a source URL.
 
         ### Arguments
         - url: the source url
 
         ### Returns
-        - fallback youtube url if available
+        - alternate watch URLs in retry order
         """
 
         if not url:
-            return None
+            return []
 
         parsed_url = urlparse(url)
-        if parsed_url.netloc not in ("music.youtube.com", "www.music.youtube.com"):
-            return None
+        host = parsed_url.netloc.lower()
+        video_id: Optional[str] = None
 
-        if parsed_url.path != "/watch":
-            return None
+        if host.endswith("youtu.be"):
+            video_id = parsed_url.path.lstrip("/").split("/", 1)[0] or None
+        elif parsed_url.path == "/watch":
+            video_id = parse_qs(parsed_url.query).get("v", [None])[0]
 
-        video_id = parse_qs(parsed_url.query).get("v", [None])[0]
         if not video_id:
-            return None
+            return []
 
-        return f"https://www.youtube.com/watch?v={video_id}"
+        alternates: List[str] = []
+        youtube_watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        music_watch_url = f"https://music.youtube.com/watch?v={video_id}"
+
+        if host in ("music.youtube.com", "www.music.youtube.com"):
+            alternates.append(youtube_watch_url)
+        elif host.endswith("youtube.com") or host.endswith("youtu.be"):
+            alternates.append(music_watch_url)
+            if not host.endswith("youtube.com"):
+                alternates.append(youtube_watch_url)
+
+        return alternates
 
     def _build_audio_downloader(self) -> Union[AudioProvider, Piped]:
         """
@@ -851,8 +907,12 @@ class Downloader:
                 ):
                     pending_download_urls.append(candidate_url)
 
+            def enqueue_alternate_watch_urls(candidate_url: Optional[str]):
+                for alternate_url in self._youtube_alternate_watch_urls(candidate_url):
+                    enqueue_download_url(alternate_url)
+
             enqueue_download_url(song.download_url)
-            enqueue_download_url(self._youtube_music_fallback_url(song.download_url))
+            enqueue_alternate_watch_urls(song.download_url)
 
             audio_downloader = self._build_audio_downloader()
 
@@ -885,9 +945,7 @@ class Downloader:
 
                     for searched_download_url in searched_download_urls:
                         enqueue_download_url(searched_download_url)
-                        enqueue_download_url(
-                            self._youtube_music_fallback_url(searched_download_url)
-                        )
+                        enqueue_alternate_watch_urls(searched_download_url)
                     continue
 
                 download_url = pending_download_urls.pop(0)
@@ -896,7 +954,7 @@ class Downloader:
                 logger.debug("Downloading %s using %s", song.display_name, download_url)
 
                 try:
-                    self._wait_for_next_download_attempt()
+                    self._wait_for_next_download_attempt(download_url)
                     download_info = audio_downloader.get_download_metadata(
                         download_url, download=True
                     )

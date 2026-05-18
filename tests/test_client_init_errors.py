@@ -74,6 +74,16 @@ class ClientInitErrorTest(unittest.TestCase):
         self.assertIn("rate-limited", message)
         self.assertIn("SPOTDL_CLIENT_ID", message)
 
+    def test_friendly_job_error_message_humanizes_youtube_bot_challenge(self):
+        message = _friendly_job_error_message(
+            DownloaderError(
+                "ERROR: [youtube] CxnJf0tWu48: Sign in to confirm you’re not a bot"
+            )
+        )
+
+        self.assertIn("YouTube rejected this hosted download session", message)
+        self.assertIn("cloud-hosted YouTube requests", message)
+
     def test_google_account_start_redirects_back_with_message_when_unconfigured(self):
         scope = {
             "type": "http",

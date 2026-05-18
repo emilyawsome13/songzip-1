@@ -187,6 +187,15 @@ def _friendly_job_error_message(exception: Exception) -> str:
             "SPOTDL_CLIENT_ID and SPOTDL_CLIENT_SECRET in Render, or try again later."
         )
 
+    lowered_message = message.casefold()
+    if "confirm you" in lowered_message and "not a bot" in lowered_message:
+        return (
+            "YouTube rejected this hosted download session before media extraction "
+            "completed. SongZip now retries alternate source URLs automatically, but "
+            "cloud-hosted YouTube requests can still fail even with cookies because "
+            "YouTube may bind requests to the browser session IP."
+        )
+
     return message
 
 

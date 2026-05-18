@@ -45,7 +45,8 @@ $env:SPOTDL_BUNDLE_FLATTEN = "true"
 $env:SPOTDL_BUNDLE_COMPRESSION = "store"
 $env:SPOTDL_THREADS = "3"
 $env:SPOTDL_DOWNLOAD_GAP_SECONDS = "2"
-$env:SPOTDL_YT_DLP_ARGS = "--concurrent-fragments 2 --extractor-args youtube:player_client=web"
+$env:SPOTDL_YOUTUBE_DOWNLOAD_GAP_SECONDS = "5"
+$env:SPOTDL_YT_DLP_ARGS = "--js-runtimes node --remote-components ejs:github --concurrent-fragments 2"
 
 Push-Location $projectDir
 try {

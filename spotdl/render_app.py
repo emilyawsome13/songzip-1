@@ -127,7 +127,10 @@ def _build_downloader_settings(web_settings: WebOptions) -> DownloaderOptions:
                 or (str(ffmpeg_path) if ffmpeg_path else "ffmpeg")
             ),
             "threads": _env_int("SPOTDL_THREADS", downloader_settings["threads"]),
-            "yt_dlp_args": os.environ.get("SPOTDL_YT_DLP_ARGS"),
+            "yt_dlp_args": os.environ.get(
+                "SPOTDL_YT_DLP_ARGS",
+                "--js-runtimes node --remote-components ejs:github",
+            ),
             "simple_tui": True,
             "log_level": log_level,
         }
