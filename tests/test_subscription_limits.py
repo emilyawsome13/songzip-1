@@ -1,12 +1,15 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from starlette.requests import Request
 
 from spotdl.utils.web import (
     Client,
     FREE_TIER_DOWNLOAD_LIMIT,
     _build_subscription_snapshot,
+    get_client,
     _load_subscription_state_for_key,
     _migrate_subscription_state,
     _sync_subscription_state_from_record,
@@ -218,6 +221,59 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(migrated["subscription_id"], "sub_live")
         self.assertEqual(guest_after["tier"], "free")
         self.assertEqual(record["account_key"], "acct-user")
+
+    def test_get_client_refresh_uses_authenticated_account_membership(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            account = store.register_account("member@example.com", "supersecret123")
+            store.set_account_membership("member@example.com", "pro")
+            session_token = store.create_session(account["id"], user_agent="pytest")
+            scope = {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "https",
+                "path": "/api/session/state",
+                "raw_path": b"/api/session/state",
+                "query_string": b"",
+                "headers": [
+                    (b"host", b"songzip.onrender.com"),
+                    (b"cookie", f"songzip_session={session_token}".encode("utf-8")),
+                ],
+                "client": ("127.0.0.1", 12345),
+                "server": ("songzip.onrender.com", 443),
+            }
+            request = Request(scope)
+
+            mock_downloader = Mock()
+            mock_downloader.progress_handler = Mock()
+
+            with patch("spotdl.utils.web.songzip_store", store), patch(
+                "spotdl.utils.web.Downloader",
+                return_value=mock_downloader,
+            ), patch(
+                "spotdl.utils.web.Client._refresh_completed_downloads_from_output",
+                return_value=None,
+            ), patch("spotdl.utils.web.app_state") as mock_app_state:
+                mock_app_state.downloader_settings = {}
+                mock_app_state.loop = None
+                mock_app_state.clients = {}
+                mock_app_state.logger = Mock()
+                mock_app_state.web_settings = {
+                    "web_use_output_dir": False,
+                    "host": "0.0.0.0",
+                    "port": 10000,
+                    "keep_alive": True,
+                }
+                client = get_client(
+                    client_id="guest-browser-key",
+                    account_key="guest-browser-key",
+                    request=request,
+                )
+
+        self.assertEqual(client.account_key, account["account_key"])
+        self.assertEqual(client.subscription["tier"], "pro")
+        self.assertEqual(client.subscription["membership_source"], "admin")
 
 
 if __name__ == "__main__":

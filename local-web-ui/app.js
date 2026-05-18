@@ -403,8 +403,6 @@ function bindEvents() {
 async function boot() {
   await Promise.all([
     loadVersion(),
-    loadSessionState(),
-    loadAccountMe(),
     loadSettings(),
     loadOptionsModel(),
     loadAuthProviders().catch((error) => {
@@ -412,6 +410,7 @@ async function boot() {
       state.authProviders = [];
     }),
   ]);
+  await refreshAccountSessionState();
   renderAll();
   window.__songzipBooted = true;
   try {
@@ -652,6 +651,26 @@ async function loadAccountMe() {
   }
 }
 
+function getPreferredAccountKey(account = null) {
+  const authenticatedAccountKey = normalizeAccountKey(
+    state.account?.authenticated
+      ? state.account?.account?.account_key || state.account?.account_key || ""
+      : ""
+  );
+  if (authenticatedAccountKey) {
+    return authenticatedAccountKey;
+  }
+
+  return normalizeAccountKey(
+    account?.key || account?.account_key || state.accountKey || ""
+  );
+}
+
+async function refreshAccountSessionState() {
+  await loadAccountMe();
+  await loadSessionState();
+}
+
 async function loadSettings() {
   state.settings = await api(withClient("/api/settings"));
 }
@@ -680,7 +699,7 @@ async function activateSubscriptionTier(tier, subscriptionId = null) {
 // Rendering
 function renderAll() {
   renderAccountAccess();
-  renderAccountIdentity(state.session?.account);
+  renderAccountIdentity();
   renderState();
   renderSettings();
   renderCompatibility();
@@ -796,9 +815,7 @@ function renderSubscription(subscription) {
 }
 
 function renderAccountIdentity(account = null) {
-  const key = normalizeAccountKey(
-    account?.key || account?.account_key || state.account?.account?.account_key || state.accountKey
-  );
+  const key = getPreferredAccountKey(account);
   if (key && key !== state.accountKey) {
     state.accountKey = key;
     window.localStorage.setItem(ACCOUNT_STORAGE_KEY, key);
@@ -1119,7 +1136,7 @@ async function grantSongCredits() {
       }),
     });
 
-    await Promise.all([loadSessionState(), loadAccountMe(), loadAuthProviders()]);
+    await Promise.all([refreshAccountSessionState(), loadAuthProviders()]);
     renderState();
     renderAccountIdentity();
     renderAccountAccess();
@@ -1175,7 +1192,7 @@ async function setAccountMembership() {
       }),
     });
 
-    await Promise.all([loadSessionState(), loadAccountMe(), loadAuthProviders()]);
+    await Promise.all([refreshAccountSessionState(), loadAuthProviders()]);
     renderState();
     renderAccountIdentity();
     renderAccountAccess();
@@ -1653,7 +1670,7 @@ function renderAuthProviders() {
 // Actions
 async function refreshState(showMessage = false) {
   try {
-    await Promise.all([loadSessionState(), loadAuthProviders(), loadAccountMe()]);
+    await Promise.all([refreshAccountSessionState(), loadAuthProviders()]);
     renderState();
     renderAuthProviders();
     renderAccountAccess();
