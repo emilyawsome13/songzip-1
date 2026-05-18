@@ -115,6 +115,11 @@ PAYPAL_PLAN_TO_TIER = {
 SONGZIP_SESSION_COOKIE = "songzip_session"
 GOOGLE_ACCOUNT_OAUTH_SCOPES = ["openid", "email", "profile"]
 GOOGLE_ACCOUNT_STATE_TTL_SECONDS = 900
+COOKIE_META_PREFIX = "songzip_cookie_file"
+COOKIE_FILE_HEADERS = {
+    "# netscape http cookie file",
+    "# http cookie file",
+}
 _pending_google_account_states: Dict[str, Dict[str, str]] = {}
 
 
@@ -1183,6 +1188,110 @@ def _is_path_within_root(file_path: Path, root_path: Path) -> bool:
         return False
 
 
+def _cookie_meta_key(account_key: str) -> str:
+    return f"{COOKIE_META_PREFIX}:{_normalize_account_key(account_key)}"
+
+
+def _youtube_cookie_root_path() -> Path:
+    root = get_spotdl_path() / "web" / "youtube-cookies"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _looks_like_cookie_file_contents(value: str) -> bool:
+    text = str(value or "")
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    lowered = stripped.splitlines()[0].strip().lower()
+    if lowered in COOKIE_FILE_HEADERS:
+        return True
+
+    return "\n" in text and "\t" in text
+
+
+def _store_cookie_contents_for_account(account_key: str, cookie_text: str) -> str:
+    normalized_key = _normalize_account_key(account_key)
+    if not normalized_key:
+        raise HTTPException(status_code=400, detail="SongZip account key is required.")
+
+    stripped = cookie_text.strip()
+    first_line = stripped.splitlines()[0].strip().lower() if stripped else ""
+    if first_line not in COOKIE_FILE_HEADERS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "YouTube cookies must be pasted in Netscape cookies.txt format. "
+                "The first line should be # Netscape HTTP Cookie File."
+            ),
+        )
+
+    cookie_path = _youtube_cookie_root_path() / f"{normalized_key}.txt"
+    cookie_path.write_text(stripped + "\n", encoding="utf-8")
+    songzip_store.set_meta(_cookie_meta_key(normalized_key), str(cookie_path))
+    return str(cookie_path)
+
+
+def _clear_stored_cookie_file(account_key: str) -> None:
+    normalized_key = _normalize_account_key(account_key)
+    if not normalized_key:
+        return
+
+    existing = songzip_store.get_meta(_cookie_meta_key(normalized_key))
+    if existing:
+        try:
+            Path(existing).unlink(missing_ok=True)
+        except OSError:
+            logger = getattr(app_state, "logger", None)
+            if logger is not None:
+                logger.debug(
+                    "Could not remove stored YouTube cookies for %s",
+                    normalized_key,
+                )
+    songzip_store.set_meta(_cookie_meta_key(normalized_key), "")
+
+
+def _stored_cookie_file_for_account(account_key: str) -> str:
+    normalized_key = _normalize_account_key(account_key)
+    if not normalized_key:
+        return ""
+
+    stored = str(songzip_store.get_meta(_cookie_meta_key(normalized_key)) or "").strip()
+    if not stored:
+        return ""
+
+    stored_path = Path(stored)
+    if stored_path.is_file():
+        return str(stored_path)
+
+    return ""
+
+
+def _resolve_cookie_file_setting(account_key: str, raw_value: Any) -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        _clear_stored_cookie_file(account_key)
+        return ""
+
+    if _looks_like_cookie_file_contents(value):
+        return _store_cookie_contents_for_account(account_key, value)
+
+    candidate = Path(value).expanduser()
+    if candidate.is_file():
+        resolved = str(candidate.resolve())
+        songzip_store.set_meta(_cookie_meta_key(account_key), resolved)
+        return resolved
+
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Hosted SongZip cannot read cookie paths from your own device. "
+            "Paste the exported Netscape cookies.txt contents into the cookie field instead."
+        ),
+    )
+
+
 class SPAStaticFiles(StaticFiles):
     """
     Override the static files to serve the index.html and other assets.
@@ -1247,6 +1356,11 @@ class Client:
         self.account_key = _normalize_account_key(account_key) or _normalize_account_key(
             client_id
         )
+        self.downloader_settings["cookie_file"] = (
+            _stored_cookie_file_for_account(self.account_key)
+            or self.downloader_settings.get("cookie_file")
+            or ""
+        )
         self.downloader = Downloader(
             settings=self.downloader_settings, loop=app_state.loop
         )
@@ -1287,6 +1401,11 @@ class Client:
 
         self.account_key = normalized
         self.pending_upgrade_prompt = None
+        self.downloader_settings["cookie_file"] = (
+            _stored_cookie_file_for_account(self.account_key)
+            or app_state.downloader_settings.get("cookie_file")
+            or ""
+        )
         self.subscription = self._load_subscription_state()
         self._reconcile_upgrade_prompt()
 
@@ -3469,6 +3588,12 @@ def update_settings(
     for key, default_value in DOWNLOADER_OPTIONS.items():
         if is_blank(settings_cpy.get(key)):
             settings_cpy[key] = default_value
+
+    if "cookie_file" in settings_cpy:
+        settings_cpy["cookie_file"] = _resolve_cookie_file_setting(
+            client.account_key,
+            settings_cpy.get("cookie_file"),
+        )
 
     forced_format = state.web_settings.get("forced_format")
     if forced_format:

@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
@@ -11,9 +13,12 @@ from spotdl.utils.web import (
     account_google_start,
     _decorate_account,
     _friendly_job_error_message,
+    _resolve_cookie_file_setting,
+    _stored_cookie_file_for_account,
     ensure_spotify_client_initialized,
     get_client,
 )
+from spotdl.utils.songzip_store import SongZipStore
 
 
 class ClientInitErrorTest(unittest.TestCase):
@@ -148,6 +153,45 @@ class ClientInitErrorTest(unittest.TestCase):
             decorated = _decorate_account(account)
 
         self.assertFalse(decorated["is_admin"])
+
+    def test_cookie_field_accepts_pasted_netscape_cookie_text(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            cookies_text = "\n".join(
+                [
+                    "# Netscape HTTP Cookie File",
+                    ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tVISITOR_INFO1_LIVE\ttest-value",
+                ]
+            )
+
+            with patch("spotdl.utils.web.songzip_store", store), patch(
+                "spotdl.utils.web.get_spotdl_path",
+                return_value=Path(temp_dir),
+            ):
+                saved_path = _resolve_cookie_file_setting("acct-demo", cookies_text)
+                stored_path = _stored_cookie_file_for_account("acct-demo")
+                self.assertEqual(saved_path, stored_path)
+                self.assertTrue(Path(saved_path).is_file())
+                self.assertIn(
+                    "Netscape HTTP Cookie File",
+                    Path(saved_path).read_text(encoding="utf-8"),
+                )
+
+    def test_cookie_field_rejects_missing_local_cookie_path(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            with patch("spotdl.utils.web.songzip_store", store), patch(
+                "spotdl.utils.web.get_spotdl_path",
+                return_value=Path(temp_dir),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    _resolve_cookie_file_setting(
+                        "acct-demo",
+                        "C:\\Users\\someone\\Downloads\\cookies.txt",
+                    )
+
+        self.assertEqual(caught.exception.status_code, 400)
+        self.assertIn("Paste the exported Netscape cookies.txt contents", str(caught.exception.detail))
 
 
 if __name__ == "__main__":
