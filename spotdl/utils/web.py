@@ -107,6 +107,8 @@ PAYPAL_SUBSCRIPTION_STATUS_MAP = {
     "BILLING.SUBSCRIPTION.EXPIRED": "EXPIRED",
     "PAYMENT.SALE.COMPLETED": "ACTIVE",
 }
+PAYPAL_ACTIVE_STATUSES = {"ACTIVE", "APPROVAL_PENDING", "APPROVED", "LOCAL_APPROVED"}
+PAYPAL_TERMINAL_STATUSES = {"CANCELLED", "SUSPENDED", "EXPIRED", "FREE"}
 PAYPAL_PLAN_TO_TIER = {
     os.environ.get("SONGZIP_PAYPAL_BASIC_PLAN_ID", "P-68Y262703G6930321NID6XTQ"): "basic",
     os.environ.get("SONGZIP_PAYPAL_PLUS_PLAN_ID", "P-95499278FS551045NNID6Y2Y"): "plus",
@@ -381,6 +383,130 @@ def _subscription_state_path_for_key(account_key: str) -> Path:
     return _subscription_root_path() / f"{account_key}.json"
 
 
+def _apply_paypal_record_to_state(
+    account_key: str,
+    state: Dict[str, Any],
+    record: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool, bool]:
+    """
+    Merge a PayPal subscription record into the local SongZip state.
+
+    ### Arguments
+    - account_key: normalized SongZip account key
+    - state: current local state
+    - record: PayPal subscription record
+
+    ### Returns
+    - next state, whether the state changed, whether admin membership ignored the record
+    """
+
+    next_state = dict(state or _default_subscription_state())
+    tier = str(record.get("tier", "free")).strip().lower()
+    if tier not in SUPPORTED_SUBSCRIPTION_TIERS:
+        tier = "free"
+
+    status = str(record.get("status", "LOCAL_APPROVED")).strip().upper()
+    membership_source = str(next_state.get("membership_source", "free")).strip().lower()
+    current_subscription_id = str(next_state.get("subscription_id") or "").strip()
+    record_subscription_id = str(record.get("subscription_id") or "").strip()
+
+    if membership_source == "admin" and (
+        not current_subscription_id or current_subscription_id != record_subscription_id
+    ):
+        return next_state, False, True
+
+    next_state["paypal_status"] = status
+    next_state["updated_at"] = max(
+        str(next_state.get("updated_at") or ""),
+        str(record.get("updated_at") or ""),
+    ) or _timestamp_now()
+
+    if status in PAYPAL_ACTIVE_STATUSES:
+        next_state["tier"] = tier
+        next_state["membership_source"] = "paypal" if tier != "free" else "free"
+        next_state["subscription_id"] = record.get("subscription_id")
+        next_state["activated_at"] = (
+            record.get("activated_at")
+            or next_state.get("activated_at")
+            or _timestamp_now()
+        )
+    else:
+        next_state["tier"] = "free"
+        next_state["membership_source"] = "free"
+        next_state["subscription_id"] = None
+        next_state["activated_at"] = None
+
+    changed = any(
+        next_state.get(key) != (state or {}).get(key)
+        for key in (
+            "tier",
+            "membership_source",
+            "subscription_id",
+            "activated_at",
+            "paypal_status",
+            "updated_at",
+        )
+    )
+    return next_state, changed, False
+
+
+def _maybe_refresh_subscription_from_paypal_record(
+    account_key: str,
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Refresh local subscription state from the latest stored PayPal record when needed.
+
+    ### Arguments
+    - account_key: normalized SongZip account key
+    - state: current loaded state
+
+    ### Returns
+    - reconciled subscription state
+    """
+
+    record = songzip_store.load_latest_paypal_subscription_for_account(account_key)
+    if record is None:
+        return state
+
+    current_subscription_id = str(state.get("subscription_id") or "").strip()
+    record_subscription_id = str(record.get("subscription_id") or "").strip()
+    record_updated_at = str(record.get("updated_at") or "")
+    state_updated_at = str(state.get("updated_at") or "")
+    state_tier = str(state.get("tier", "free")).strip().lower()
+    record_status = str(record.get("status", "")).strip().upper()
+
+    should_refresh = (
+        bool(record_updated_at and record_updated_at > state_updated_at)
+        or (
+            record_status in PAYPAL_ACTIVE_STATUSES
+            and state_tier == "free"
+        )
+        or (
+            record_status in PAYPAL_TERMINAL_STATUSES
+            and str(state.get("membership_source", "free")).strip().lower() == "paypal"
+            and state_tier != "free"
+        )
+        or (
+            bool(record_subscription_id)
+            and record_subscription_id != current_subscription_id
+            and record_status in PAYPAL_ACTIVE_STATUSES
+        )
+    )
+    if not should_refresh:
+        return state
+
+    next_state, changed, ignored = _apply_paypal_record_to_state(account_key, state, record)
+    if ignored:
+        return state
+
+    if changed:
+        songzip_store.save_subscription(account_key, next_state)
+        return songzip_store.load_subscription(account_key)
+
+    return next_state
+
+
 def _load_subscription_state_for_key(account_key: str) -> Dict[str, Any]:
     """
     Load persisted subscription state for a SongZip account key.
@@ -392,7 +518,12 @@ def _load_subscription_state_for_key(account_key: str) -> Dict[str, Any]:
     - subscription state dictionary
     """
 
-    return songzip_store.load_subscription(account_key)
+    normalized_key = _normalize_account_key(account_key)
+    state = songzip_store.load_subscription(normalized_key)
+    if not normalized_key:
+        return state
+
+    return _maybe_refresh_subscription_from_paypal_record(normalized_key, state)
 
 
 def _save_subscription_state_for_key(account_key: str, state: Dict[str, Any]):
@@ -506,6 +637,15 @@ def _migrate_subscription_state(source_key: str, target_key: str) -> Dict[str, A
     if not normalized_source or not normalized_target or normalized_source == normalized_target:
         return _load_subscription_state_for_key(normalized_target or normalized_source)
 
+    try:
+        songzip_store.migrate_account_settings(normalized_source, normalized_target)
+    except (OSError, SongZipStoreError):
+        app_state.logger.debug(
+            "Could not migrate account settings from %s to %s",
+            normalized_source,
+            normalized_target,
+        )
+
     source_state = _load_subscription_state_for_key(normalized_source)
     target_state = _load_subscription_state_for_key(normalized_target)
 
@@ -581,7 +721,9 @@ def _migrate_subscription_state(source_key: str, target_key: str) -> Dict[str, A
         _sync_subscription_state_from_record(record)
 
     if normalized_source != normalized_target:
-        _save_subscription_state_for_key(normalized_source, _default_subscription_state())
+        reset_state = _default_subscription_state()
+        reset_state["force_membership_reset"] = True
+        _save_subscription_state_for_key(normalized_source, reset_state)
 
     return _load_subscription_state_for_key(normalized_target)
 
@@ -598,19 +740,11 @@ def _sync_subscription_state_from_record(record: Dict[str, Any]):
     if not account_key:
         return
 
-    tier = str(record.get("tier", "free")).strip().lower()
-    if tier not in SUPPORTED_SUBSCRIPTION_TIERS:
-        tier = "free"
-
-    status = str(record.get("status", "LOCAL_APPROVED")).strip().upper()
     state = _load_subscription_state_for_key(account_key)
-    membership_source = str(state.get("membership_source", "free")).strip().lower()
-    current_subscription_id = str(state.get("subscription_id") or "").strip()
-    record_subscription_id = str(record.get("subscription_id") or "").strip()
+    next_state, changed, ignored = _apply_paypal_record_to_state(account_key, state, record)
+    status = str(record.get("status", "LOCAL_APPROVED")).strip().upper()
 
-    if membership_source == "admin" and (
-        not current_subscription_id or current_subscription_id != record_subscription_id
-    ):
+    if ignored:
         try:
             songzip_store.record_subscription_usage_event(
                 account_key,
@@ -630,25 +764,14 @@ def _sync_subscription_state_from_record(record: Dict[str, Any]):
             )
         return
 
-    state["paypal_status"] = status
+    if changed:
+        _save_subscription_state_for_key(account_key, next_state)
 
-    if status in {"ACTIVE", "APPROVAL_PENDING", "APPROVED", "LOCAL_APPROVED"}:
-        state["tier"] = tier
-        state["membership_source"] = "paypal" if tier != "free" else "free"
-        state["subscription_id"] = record.get("subscription_id")
-        state["activated_at"] = record.get("activated_at") or state.get("activated_at") or _timestamp_now()
-    else:
-        state["tier"] = "free"
-        state["membership_source"] = "free"
-        state["subscription_id"] = None
-        state["activated_at"] = None
-
-    _save_subscription_state_for_key(account_key, state)
     try:
         songzip_store.record_subscription_usage_event(
             account_key,
             "paypal_subscription_sync",
-            tier=state.get("tier"),
+            tier=next_state.get("tier"),
             subscription_id=record.get("subscription_id"),
             details={
                 "status": status,
@@ -1178,6 +1301,40 @@ def _normalize_web_downloader_settings(settings: Dict[str, Any]) -> DownloaderOp
     return DownloaderOptions(**settings_cpy)  # type: ignore[arg-type]
 
 
+def _default_web_downloader_settings() -> DownloaderOptions:
+    return _normalize_web_downloader_settings(
+        create_settings_type(
+            Namespace(config=False),
+            dict(app_state.downloader_settings),
+            DOWNLOADER_OPTIONS,
+        )  # type: ignore[arg-type]
+    )
+
+
+def _load_account_downloader_settings(account_key: str) -> DownloaderOptions:
+    normalized_key = _normalize_account_key(account_key)
+    settings_cpy = dict(_default_web_downloader_settings())
+    persisted_settings = songzip_store.load_account_settings(normalized_key)
+    if persisted_settings:
+        settings_cpy.update({k: v for k, v in persisted_settings.items() if v is not None})
+
+    forced_format = app_state.web_settings.get("forced_format")
+    if forced_format:
+        settings_cpy["format"] = forced_format
+
+    forced_output = app_state.web_settings.get("forced_output")
+    if forced_output:
+        settings_cpy["output"] = forced_output
+
+    normalized_settings = _normalize_web_downloader_settings(settings_cpy)
+    normalized_settings["cookie_file"] = (
+        _stored_cookie_file_for_account(normalized_key)
+        or normalized_settings.get("cookie_file")
+        or ""
+    )
+    return normalized_settings
+
+
 def _is_path_within_root(file_path: Path, root_path: Path) -> bool:
     """
     Check whether a file path is inside a root directory.
@@ -1351,30 +1508,14 @@ class Client:
         - downloader_settings: The downloader settings.
         """
 
-        self.downloader_settings = _normalize_web_downloader_settings(
-            create_settings_type(
-                Namespace(config=False),
-                dict(app_state.downloader_settings),
-                DOWNLOADER_OPTIONS,
-            )  # type: ignore
-        )
-
         self.websocket: Optional[WebSocket] = websocket
         self.client_id = client_id
         self.authenticated_account = authenticated_account
         self.account_key = _normalize_account_key(account_key) or _normalize_account_key(
             client_id
         )
-        self.downloader_settings["cookie_file"] = (
-            _stored_cookie_file_for_account(self.account_key)
-            or self.downloader_settings.get("cookie_file")
-            or ""
-        )
-        self.downloader = Downloader(
-            settings=self.downloader_settings, loop=app_state.loop
-        )
-
-        self.downloader.progress_handler.web_ui = True
+        self.downloader_settings = _load_account_downloader_settings(self.account_key)
+        self.downloader = self._create_downloader(self.downloader_settings)
         self.download_task: Optional[asyncio.Task] = None
         self.events: List[Dict[str, Any]] = []
         self.song_states: Dict[str, Dict[str, Any]] = {}
@@ -1393,6 +1534,18 @@ class Client:
             "error": None,
             "output_root": self.get_output_root(),
         }
+        self._restore_persisted_snapshot()
+
+    def _create_downloader(self, settings: DownloaderOptions) -> Downloader:
+        downloader = Downloader(settings=settings, loop=app_state.loop)
+        downloader.progress_handler.web_ui = True
+        return downloader
+
+    def _reload_account_downloader_settings(self) -> None:
+        self.downloader_settings = _load_account_downloader_settings(self.account_key)
+        self.downloader = self._create_downloader(self.downloader_settings)
+        if hasattr(self, "current_job") and isinstance(self.current_job, dict):
+            self.current_job["output_root"] = self.get_output_root()
 
     def set_account_key(self, account_key: Optional[str]):
         """
@@ -1410,13 +1563,10 @@ class Client:
 
         self.account_key = normalized
         self.pending_upgrade_prompt = None
-        self.downloader_settings["cookie_file"] = (
-            _stored_cookie_file_for_account(self.account_key)
-            or app_state.downloader_settings.get("cookie_file")
-            or ""
-        )
+        self._reload_account_downloader_settings()
         self.subscription = self._load_subscription_state()
         self._reconcile_upgrade_prompt()
+        self._persist_client_snapshot()
 
     def set_authenticated_account(self, account: Optional[Dict[str, Any]]):
         """
@@ -1429,6 +1579,8 @@ class Client:
         self.authenticated_account = account
         if account and account.get("account_key"):
             self.set_account_key(str(account["account_key"]))
+        else:
+            self._persist_client_snapshot()
 
     def attach_websocket(self, websocket: WebSocket):
         """
@@ -1585,6 +1737,105 @@ class Client:
                 "Could not save subscription state for %s",
                 self.account_key,
             )
+
+    def _serialize_client_snapshot(self) -> Dict[str, Any]:
+        return {
+            "job": dict(self.current_job),
+            "song_states": list(self.song_states.values()),
+            "downloads": list(self.completed_downloads[-50:]),
+            "bundle": dict(self.download_bundle) if isinstance(self.download_bundle, dict) else None,
+            "events": list(self.events[-120:]),
+            "latest_update": dict(self.latest_update) if isinstance(self.latest_update, dict) else self.latest_update,
+            "pending_upgrade_prompt": (
+                dict(self.pending_upgrade_prompt)
+                if isinstance(self.pending_upgrade_prompt, dict)
+                else None
+            ),
+        }
+
+    def _persist_client_snapshot(self) -> None:
+        try:
+            songzip_store.save_client_snapshot(
+                self.client_id,
+                self.account_key,
+                self._serialize_client_snapshot(),
+            )
+        except (OSError, SongZipStoreError):
+            app_state.logger.debug(
+                "Could not persist dashboard snapshot for %s",
+                self.client_id,
+            )
+
+    def _restore_persisted_snapshot(self) -> None:
+        try:
+            snapshot = songzip_store.load_client_snapshot(self.client_id)
+        except (OSError, SongZipStoreError):
+            snapshot = None
+
+        if not isinstance(snapshot, dict):
+            return
+
+        snapshot_key = _normalize_account_key(snapshot.get("account_key"))
+        if snapshot_key and snapshot_key != self.account_key:
+            return
+
+        raw_job = snapshot.get("job")
+        if isinstance(raw_job, dict):
+            self.current_job.update(raw_job)
+
+        self.song_states = {}
+        for item in snapshot.get("song_states") or []:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key:
+                continue
+            self.song_states[key] = dict(item)
+
+        self.completed_downloads = [
+            dict(item)
+            for item in (snapshot.get("downloads") or [])
+            if isinstance(item, dict)
+        ]
+        raw_bundle = snapshot.get("bundle")
+        self.download_bundle = dict(raw_bundle) if isinstance(raw_bundle, dict) else None
+        self.events = [
+            dict(item)
+            for item in (snapshot.get("events") or [])
+            if isinstance(item, dict)
+        ]
+        raw_latest = snapshot.get("latest_update")
+        self.latest_update = dict(raw_latest) if isinstance(raw_latest, dict) else None
+        raw_prompt = snapshot.get("pending_upgrade_prompt")
+        self.pending_upgrade_prompt = dict(raw_prompt) if isinstance(raw_prompt, dict) else None
+
+        if str(self.current_job.get("status", "idle")).strip().lower() in {"starting", "running"}:
+            self.current_job.update(
+                {
+                    "status": "interrupted",
+                    "message": "Needs retry",
+                    "finished_at": self._timestamp(),
+                    "error": (
+                        "SongZip restarted before the previous job could finish. "
+                        "Retry the last query to continue."
+                    ),
+                    "output_root": self.get_output_root(),
+                }
+            )
+            self.events.append(
+                {
+                    "timestamp": self._timestamp(),
+                    "level": "warning",
+                    "kind": "job",
+                    "message": "Previous job was interrupted before completion.",
+                    "details": {
+                        "query": self.current_job.get("query"),
+                    },
+                }
+            )
+
+        self._reconcile_upgrade_prompt()
+        self._persist_client_snapshot()
 
     def _record_subscription_event(
         self,
@@ -2153,6 +2404,7 @@ class Client:
         if broadcast:
             await self.push_state(event=event)
 
+        self._persist_client_snapshot()
         return event
 
     async def handle_song_update(self, update: Dict[str, Any]):
@@ -2213,6 +2465,8 @@ class Client:
             or current_progress in {0, 100}
         ):
             await self.push_state(event=event)
+
+        self._persist_client_snapshot()
 
     def log_event(
         self,
@@ -2281,6 +2535,7 @@ class Client:
             kind="job",
             details={"query": query, "output_root": output_root},
         )
+        self._persist_client_snapshot()
 
     async def finish_query_download(
         self,
@@ -2345,6 +2600,7 @@ class Client:
                 "bundle": self.download_bundle,
             },
         )
+        self._persist_client_snapshot()
 
     async def fail_query_download(self, query: str, exception: Exception):
         """
@@ -2372,6 +2628,7 @@ class Client:
                 kind="billing",
                 details=exception.prompt,
             )
+            self._persist_client_snapshot()
             return
 
         friendly_error = _friendly_job_error_message(exception)
@@ -2392,6 +2649,7 @@ class Client:
             kind="job",
             details=traceback.format_exc(),
         )
+        self._persist_client_snapshot()
 
     async def start_download_query(self, query: str) -> Dict[str, Any]:
         """
@@ -2435,8 +2693,53 @@ class Client:
             details={"query": query, "output_root": self.get_output_root()},
         )
 
+        self._persist_client_snapshot()
         self.download_task = asyncio.create_task(self._run_download_query_task(query))
         return self.get_state_snapshot()
+
+    async def retry_last_query(self) -> Dict[str, Any]:
+        """
+        Retry the most recent query for this SongZip client.
+
+        ### Returns
+        - current state snapshot
+        """
+
+        query = str(self.current_job.get("query") or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="No previous query is available to retry.")
+
+        return await self.start_download_query(query)
+
+    def reset_session_state(self):
+        """
+        Reset the current dashboard session state and clear persisted snapshot data.
+        """
+
+        if self.download_task and not self.download_task.done():
+            raise HTTPException(
+                status_code=409,
+                detail="A download is still running. Wait for it to finish before resetting the session.",
+            )
+
+        self._delete_existing_bundle()
+        self.events = []
+        self.song_states = {}
+        self.completed_downloads = []
+        self.latest_update = None
+        self.pending_upgrade_prompt = None
+        self.current_job = {
+            "status": "idle",
+            "query": None,
+            "message": "Ready",
+            "started_at": None,
+            "finished_at": None,
+            "resolved_count": 0,
+            "error": None,
+            "output_root": self.get_output_root(),
+        }
+        self.download_task = None
+        self._persist_client_snapshot()
 
     async def _run_download_query_task(self, query: str):
         """
@@ -3132,11 +3435,12 @@ def account_login(
 
     _set_songzip_session_cookie(response, session_token)
     account = _decorate_account(account) or account
-    client.set_authenticated_account(account)
-    client.subscription = _migrate_subscription_state(
+    migrated_subscription = _migrate_subscription_state(
         guest_account_key,
         account["account_key"],
     )
+    client.set_authenticated_account(account)
+    client.subscription = migrated_subscription
     return {
         "authenticated": True,
         "account": account,
@@ -3423,6 +3727,41 @@ async def download_query(
     return await client.start_download_query(stripped_query)
 
 
+@router.post("/api/download/retry-last", response_model=None)
+async def retry_last_download_query(
+    client: Client = Depends(get_client),
+) -> Dict[str, Any]:
+    """
+    Retry the latest query for the current SongZip dashboard client.
+
+    ### Arguments
+    - client: the client's state
+
+    ### Returns
+    - current state snapshot
+    """
+
+    return await client.retry_last_query()
+
+
+@router.post("/api/session/reset", response_model=None)
+def reset_session_state(
+    client: Client = Depends(get_client),
+) -> Dict[str, Any]:
+    """
+    Clear the current dashboard job/session view without affecting account access.
+
+    ### Arguments
+    - client: the client's state
+
+    ### Returns
+    - reset state snapshot
+    """
+
+    client.reset_session_state()
+    return client.get_state_snapshot()
+
+
 @router.post("/api/download/url")
 async def download_url(
     url: str,
@@ -3623,6 +3962,8 @@ def update_settings(
         new_settings,
         loop=state.loop,
     )
+    client.downloader.progress_handler.web_ui = True
+    songzip_store.save_account_settings(client.account_key, dict(new_settings))
 
     return new_settings
 

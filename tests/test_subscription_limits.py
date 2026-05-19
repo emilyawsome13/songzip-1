@@ -172,6 +172,41 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(loaded["membership_source"], "admin")
         self.assertEqual(loaded["paypal_status"], "ADMIN_GRANTED")
 
+    def test_load_subscription_state_refreshes_from_latest_paypal_record(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_subscription(
+                "acct-paypal",
+                {
+                    "tier": "free",
+                    "downloads_used": 0,
+                    "downloads_lifetime": 0,
+                    "membership_source": "free",
+                    "bonus_credits": 0,
+                    "subscription_id": None,
+                    "activated_at": None,
+                    "paypal_status": None,
+                },
+            )
+            store.save_paypal_subscription(
+                "sub_live",
+                {
+                    "subscription_id": "sub_live",
+                    "account_key": "acct-paypal",
+                    "tier": "plus",
+                    "status": "ACTIVE",
+                    "plan_id": "plan_plus",
+                    "activated_at": "2026-05-18T08:00:00-05:00",
+                },
+            )
+
+            with patch("spotdl.utils.web.songzip_store", store):
+                loaded = _load_subscription_state_for_key("acct-paypal")
+
+        self.assertEqual(loaded["tier"], "plus")
+        self.assertEqual(loaded["membership_source"], "paypal")
+        self.assertEqual(loaded["subscription_id"], "sub_live")
+
     def test_guest_subscription_state_migrates_into_authenticated_account_key(self):
         with TemporaryDirectory() as temp_dir:
             store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
@@ -274,6 +309,103 @@ class SubscriptionLimitTest(unittest.TestCase):
         self.assertEqual(client.account_key, account["account_key"])
         self.assertEqual(client.subscription["tier"], "pro")
         self.assertEqual(client.subscription["membership_source"], "admin")
+
+    def test_client_loads_persisted_account_settings(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_account_settings(
+                "acct-settings",
+                {
+                    "threads": 4,
+                    "preload": True,
+                    "format": "mp3",
+                },
+            )
+            mock_downloader = Mock()
+            mock_downloader.progress_handler = Mock()
+
+            with patch("spotdl.utils.web.songzip_store", store), patch(
+                "spotdl.utils.web.Downloader",
+                return_value=mock_downloader,
+            ), patch(
+                "spotdl.utils.web.Client._restore_persisted_snapshot",
+                return_value=None,
+            ), patch("spotdl.utils.web.app_state") as mock_app_state:
+                mock_app_state.downloader_settings = {}
+                mock_app_state.loop = None
+                mock_app_state.logger = Mock()
+                mock_app_state.web_settings = {
+                    "web_use_output_dir": False,
+                    "host": "0.0.0.0",
+                    "port": 10000,
+                    "keep_alive": True,
+                    "forced_format": None,
+                    "forced_output": None,
+                }
+                client = Client(None, "browser-settings", account_key="acct-settings")
+
+        self.assertEqual(int(client.downloader_settings["threads"]), 4)
+        self.assertTrue(bool(client.downloader_settings["preload"]))
+        self.assertEqual(str(client.downloader_settings["format"]).lower(), "mp3")
+
+    def test_client_restores_interrupted_snapshot_after_refresh(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_client_snapshot(
+                "browser-1",
+                "acct-demo",
+                {
+                    "job": {
+                        "status": "running",
+                        "query": "artist url",
+                        "message": "Downloading",
+                        "started_at": "2026-05-18T08:00:00-05:00",
+                    },
+                    "song_states": [
+                        {
+                            "key": "song-1",
+                            "display_name": "Song One",
+                            "status": "downloading",
+                            "queue_position": 1,
+                            "progress": 42,
+                        }
+                    ],
+                    "events": [],
+                },
+            )
+            mock_downloader = Mock()
+            mock_downloader.progress_handler = Mock()
+
+            with patch("spotdl.utils.web.songzip_store", store), patch(
+                "spotdl.utils.web.Downloader",
+                return_value=mock_downloader,
+            ), patch(
+                "spotdl.utils.web._normalize_web_downloader_settings",
+                return_value={
+                    "output": "downloads/{artist} - {title}.{output-ext}",
+                    "format": "mp3",
+                    "cookie_file": "",
+                    "ytm_data": False,
+                    "playlist_numbering": False,
+                    "album_type": None,
+                    "playlist_retain_track_cover": False,
+                },
+            ), patch("spotdl.utils.web.app_state") as mock_app_state:
+                mock_app_state.downloader_settings = {}
+                mock_app_state.loop = None
+                mock_app_state.logger = Mock()
+                mock_app_state.web_settings = {
+                    "web_use_output_dir": False,
+                    "host": "0.0.0.0",
+                    "port": 10000,
+                    "keep_alive": True,
+                }
+                client = Client(None, "browser-1", account_key="acct-demo")
+
+        self.assertEqual(client.current_job["status"], "interrupted")
+        self.assertEqual(client.current_job["query"], "artist url")
+        self.assertIn("Retry the last query", client.current_job["error"])
+        self.assertIn("song-1", client.song_states)
 
     def test_session_snapshot_active_count_excludes_queued_songs(self):
         client = Client.__new__(Client)

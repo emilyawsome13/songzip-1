@@ -33,6 +33,13 @@ GOOGLE_PASSWORD_PLACEHOLDER = "oauth_google"
 ADMIN_ACCOUNT_META_KEY = "songzip_admin_account_key"
 SUPPORTED_MEMBERSHIP_TIERS = {"free", "basic", "plus", "pro"}
 SUPPORTED_MEMBERSHIP_SOURCES = {"free", "paypal", "admin"}
+MEMBERSHIP_PAYPAL_TERMINAL_STATUSES = {
+    "ADMIN_CANCELLED",
+    "CANCELLED",
+    "EXPIRED",
+    "FREE",
+    "SUSPENDED",
+}
 
 
 class SongZipStoreError(Exception):
@@ -86,6 +93,103 @@ def _resolve_membership_source(state: Dict[str, Any]) -> str:
         return "paypal"
 
     return "paypal"
+
+
+def _normalize_membership_tier(value: Any) -> str:
+    tier = str(value or "free").strip().lower()
+    return tier if tier in SUPPORTED_MEMBERSHIP_TIERS else "free"
+
+
+def _normalize_membership_state(
+    state: Optional[Dict[str, Any]],
+    updated_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = dict(state or {})
+    tier = _normalize_membership_tier(payload.get("tier"))
+    subscription_id = str(payload.get("subscription_id") or "").strip() or None
+    paypal_status = str(payload.get("paypal_status") or "").strip().upper() or None
+    normalized = {
+        "tier": tier,
+        "membership_source": _resolve_membership_source(
+            {
+                **payload,
+                "tier": tier,
+                "subscription_id": subscription_id,
+                "paypal_status": paypal_status,
+            }
+        ),
+        "bonus_credits": max(0, int(payload.get("bonus_credits", 0) or 0)),
+        "subscription_id": subscription_id,
+        "activated_at": payload.get("activated_at"),
+        "paypal_status": paypal_status,
+        "force_membership_reset": bool(payload.get("force_membership_reset")),
+        "updated_at": str(updated_at or payload.get("updated_at") or _timestamp()),
+    }
+    return normalized
+
+
+def _membership_state_has_entitlements(state: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(state, dict):
+        return False
+
+    if _normalize_membership_tier(state.get("tier")) != "free":
+        return True
+
+    if int(state.get("bonus_credits", 0) or 0) > 0:
+        return True
+
+    if str(state.get("membership_source", "free")).strip().lower() != "free":
+        return True
+
+    return bool(state.get("subscription_id") or state.get("paypal_status"))
+
+
+def _is_explicit_membership_downgrade(
+    existing_state: Dict[str, Any],
+    incoming_state: Dict[str, Any],
+) -> bool:
+    existing_source = str(existing_state.get("membership_source", "free")).strip().lower()
+    incoming_tier = _normalize_membership_tier(incoming_state.get("tier"))
+    incoming_source = str(incoming_state.get("membership_source", "free")).strip().lower()
+    incoming_status = str(incoming_state.get("paypal_status") or "").strip().upper()
+
+    if incoming_tier != "free" or incoming_source != "free":
+        return False
+
+    if existing_source == "admin":
+        return incoming_status == "ADMIN_CANCELLED"
+
+    if existing_source == "paypal":
+        return incoming_status in MEMBERSHIP_PAYPAL_TERMINAL_STATUSES
+
+    return not _membership_state_has_entitlements(existing_state)
+
+
+def _should_replace_membership_state(
+    existing_state: Dict[str, Any],
+    incoming_state: Dict[str, Any],
+) -> bool:
+    if not _membership_state_has_entitlements(existing_state):
+        return True
+
+    if bool(incoming_state.get("force_membership_reset")):
+        return True
+
+    incoming_tier = _normalize_membership_tier(incoming_state.get("tier"))
+    incoming_source = str(incoming_state.get("membership_source", "free")).strip().lower()
+    incoming_bonus = int(incoming_state.get("bonus_credits", 0) or 0)
+    existing_bonus = int(existing_state.get("bonus_credits", 0) or 0)
+
+    if _is_explicit_membership_downgrade(existing_state, incoming_state):
+        return True
+
+    if incoming_tier != "free" or incoming_source != "free":
+        return True
+
+    if incoming_bonus > existing_bonus:
+        return True
+
+    return False
 
 
 def _make_password_hash(password: str) -> str:
@@ -234,6 +338,30 @@ class SongZipStore:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS account_memberships (
+                    account_key TEXT PRIMARY KEY,
+                    tier TEXT NOT NULL,
+                    membership_source TEXT NOT NULL DEFAULT 'free',
+                    bonus_credits INTEGER NOT NULL DEFAULT 0,
+                    subscription_id TEXT,
+                    activated_at TEXT,
+                    paypal_status TEXT,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS account_settings (
+                    account_key TEXT PRIMARY KEY,
+                    settings_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS client_snapshots (
+                    client_id TEXT PRIMARY KEY,
+                    account_key TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS paypal_subscriptions (
                     subscription_id TEXT PRIMARY KEY,
                     account_key TEXT,
@@ -302,6 +430,36 @@ class SongZipStore:
                 ON subscription_usage_events(account_key, created_at DESC)
                 """
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_client_snapshots_account_updated
+                ON client_snapshots(account_key, updated_at DESC)
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO account_memberships (
+                    account_key,
+                    tier,
+                    membership_source,
+                    bonus_credits,
+                    subscription_id,
+                    activated_at,
+                    paypal_status,
+                    updated_at
+                )
+                SELECT
+                    account_key,
+                    tier,
+                    membership_source,
+                    bonus_credits,
+                    subscription_id,
+                    activated_at,
+                    paypal_status,
+                    updated_at
+                FROM subscriptions
+                """
+            )
 
     @staticmethod
     def _public_account(row: sqlite3.Row) -> Dict[str, Any]:
@@ -313,6 +471,79 @@ class SongZipStore:
             "provider_subject": row["provider_subject"],
             "display_name": row["display_name"] or row["email"],
             "created_at": row["created_at"],
+        }
+
+    @staticmethod
+    def _membership_state_from_row(row: Optional[sqlite3.Row]) -> Dict[str, Any]:
+        if row is None:
+            return {}
+
+        return _normalize_membership_state(
+            {
+                "tier": row["tier"],
+                "membership_source": row["membership_source"],
+                "bonus_credits": int(row["bonus_credits"] or 0),
+                "subscription_id": row["subscription_id"],
+                "activated_at": row["activated_at"],
+                "paypal_status": row["paypal_status"],
+                "updated_at": row["updated_at"],
+            }
+        )
+
+    @staticmethod
+    def _merge_membership_state(
+        existing_state: Dict[str, Any],
+        incoming_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized_existing = _normalize_membership_state(existing_state)
+        normalized_incoming = _normalize_membership_state(incoming_state)
+
+        if _should_replace_membership_state(normalized_existing, normalized_incoming):
+            merged = dict(normalized_incoming)
+        else:
+            merged = dict(normalized_existing)
+
+        merged["bonus_credits"] = max(
+            int(normalized_existing.get("bonus_credits", 0) or 0),
+            int(normalized_incoming.get("bonus_credits", 0) or 0),
+        )
+
+        merged["updated_at"] = max(
+            str(normalized_existing.get("updated_at") or ""),
+            str(normalized_incoming.get("updated_at") or ""),
+        ) or _timestamp()
+        return merged
+
+    @staticmethod
+    def _settings_from_row(row: Optional[sqlite3.Row]) -> Dict[str, Any]:
+        if row is None or not row["settings_json"]:
+            return {}
+
+        try:
+            payload = json.loads(row["settings_json"])
+        except (TypeError, ValueError):
+            return {}
+
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _merge_usage_state(
+        existing_state: Dict[str, Any],
+        incoming_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "downloads_used": max(
+                int(existing_state.get("downloads_used", 0) or 0),
+                int(incoming_state.get("downloads_used", 0) or 0),
+            ),
+            "downloads_lifetime": max(
+                int(existing_state.get("downloads_lifetime", 0) or 0),
+                int(incoming_state.get("downloads_lifetime", 0) or 0),
+            ),
+            "updated_at": max(
+                str(existing_state.get("updated_at") or ""),
+                str(incoming_state.get("updated_at") or ""),
+            ) or _timestamp(),
         }
 
     @staticmethod
@@ -699,56 +930,132 @@ class SongZipStore:
         }
 
         with self._managed_connection() as connection:
-            row = connection.execute(
+            subscription_row = connection.execute(
                 "SELECT * FROM subscriptions WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+            membership_row = connection.execute(
+                "SELECT * FROM account_memberships WHERE account_key = ?",
                 (normalized_key,),
             ).fetchone()
 
         backup_state = self._load_subscription_backup(normalized_key) or {}
-        if row is None and not backup_state:
+        if subscription_row is None and membership_row is None and not backup_state:
             return default_state
 
         row_state: Dict[str, Any] = {}
-        if row is not None:
+        row_updated_at = ""
+        if subscription_row is not None:
+            row_updated_at = str(subscription_row["updated_at"] or "")
             row_state = {
-                "tier": row["tier"],
-                "downloads_used": int(row["downloads_used"] or 0),
-                "downloads_lifetime": int(row["downloads_lifetime"] or 0),
-                "membership_source": _resolve_membership_source(dict(row)),
-                "bonus_credits": int(row["bonus_credits"] or 0),
-                "subscription_id": row["subscription_id"],
-                "activated_at": row["activated_at"],
-                "paypal_status": row["paypal_status"],
-                "updated_at": row["updated_at"],
+                "downloads_used": int(subscription_row["downloads_used"] or 0),
+                "downloads_lifetime": int(subscription_row["downloads_lifetime"] or 0),
+                "updated_at": row_updated_at,
             }
 
-        chosen_state = row_state
-        if backup_state:
-            row_updated_at = str(row_state.get("updated_at") or "")
-            backup_updated_at = str(backup_state.get("updated_at") or "")
-            if not row_state or backup_updated_at > row_updated_at:
-                chosen_state = backup_state
+        backup_usage_state = {
+            "downloads_used": int(backup_state.get("downloads_used", 0) or 0),
+            "downloads_lifetime": int(backup_state.get("downloads_lifetime", 0) or 0),
+            "updated_at": str(backup_state.get("updated_at") or ""),
+        }
 
-        default_state.update(chosen_state)
+        if not row_state and backup_state:
+            row_state = dict(backup_usage_state)
+        elif row_state and backup_state:
+            row_state["downloads_used"] = max(
+                int(row_state.get("downloads_used", 0) or 0),
+                backup_usage_state["downloads_used"],
+            )
+            row_state["downloads_lifetime"] = max(
+                int(row_state.get("downloads_lifetime", 0) or 0),
+                backup_usage_state["downloads_lifetime"],
+            )
+            row_state["updated_at"] = max(
+                str(row_state.get("updated_at") or ""),
+                backup_usage_state["updated_at"],
+            )
+
+        membership_state = self._membership_state_from_row(membership_row)
+        if not membership_state and subscription_row is not None:
+            membership_state = self._membership_state_from_row(subscription_row)
+
+        if backup_state:
+            if membership_state:
+                membership_state = self._merge_membership_state(
+                    membership_state,
+                    backup_state,
+                )
+            else:
+                membership_state = _normalize_membership_state(backup_state)
+
+        default_state.update(row_state)
+        default_state.update(membership_state)
+        default_state["updated_at"] = max(
+            str(default_state.get("updated_at") or ""),
+            row_updated_at,
+            str(membership_state.get("updated_at") or ""),
+            str(backup_state.get("updated_at") or ""),
+        ) or _timestamp()
         default_state["membership_source"] = _resolve_membership_source(default_state)
         return default_state
 
     def save_subscription(self, account_key: str, state: Dict[str, Any]) -> None:
         normalized_key = _normalize_account_key(account_key)
         updated_at = _timestamp()
-        resolved_membership_source = _resolve_membership_source(state)
-        persisted_state = {
-            "tier": state.get("tier", "free"),
-            "downloads_used": int(state.get("downloads_used", 0) or 0),
-            "downloads_lifetime": int(state.get("downloads_lifetime", 0) or 0),
-            "membership_source": resolved_membership_source,
-            "bonus_credits": int(state.get("bonus_credits", 0) or 0),
-            "subscription_id": state.get("subscription_id"),
-            "activated_at": state.get("activated_at"),
-            "paypal_status": state.get("paypal_status"),
-            "updated_at": updated_at,
-        }
+        incoming_membership_state = _normalize_membership_state(state, updated_at=updated_at)
         with self._managed_connection() as connection:
+            existing_subscription_row = connection.execute(
+                "SELECT * FROM subscriptions WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+            existing_membership_row = connection.execute(
+                "SELECT * FROM account_memberships WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+            existing_membership_state = self._membership_state_from_row(existing_membership_row)
+            final_membership_state = (
+                self._merge_membership_state(existing_membership_state, incoming_membership_state)
+                if existing_membership_state
+                else incoming_membership_state
+            )
+            existing_usage_state = {
+                "downloads_used": int(
+                    (existing_subscription_row["downloads_used"] if existing_subscription_row else 0)
+                    or 0
+                ),
+                "downloads_lifetime": int(
+                    (
+                        existing_subscription_row["downloads_lifetime"]
+                        if existing_subscription_row
+                        else 0
+                    )
+                    or 0
+                ),
+                "updated_at": str(
+                    (existing_subscription_row["updated_at"] if existing_subscription_row else "")
+                    or ""
+                ),
+            }
+            incoming_usage_state = {
+                "downloads_used": int(state.get("downloads_used", 0) or 0),
+                "downloads_lifetime": int(state.get("downloads_lifetime", 0) or 0),
+                "updated_at": updated_at,
+            }
+            final_usage_state = self._merge_usage_state(
+                existing_usage_state,
+                incoming_usage_state,
+            )
+            persisted_state = {
+                "tier": final_membership_state["tier"],
+                "downloads_used": final_usage_state["downloads_used"],
+                "downloads_lifetime": final_usage_state["downloads_lifetime"],
+                "membership_source": final_membership_state["membership_source"],
+                "bonus_credits": int(final_membership_state.get("bonus_credits", 0) or 0),
+                "subscription_id": final_membership_state.get("subscription_id"),
+                "activated_at": final_membership_state.get("activated_at"),
+                "paypal_status": final_membership_state.get("paypal_status"),
+                "updated_at": updated_at,
+            }
             connection.execute(
                 """
                 INSERT INTO subscriptions (
@@ -780,11 +1087,44 @@ class SongZipStore:
                     persisted_state["tier"],
                     persisted_state["downloads_used"],
                     persisted_state["downloads_lifetime"],
-                    resolved_membership_source,
+                    persisted_state["membership_source"],
                     persisted_state["bonus_credits"],
                     persisted_state["subscription_id"],
                     persisted_state["activated_at"],
                     persisted_state["paypal_status"],
+                    updated_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO account_memberships (
+                    account_key,
+                    tier,
+                    membership_source,
+                    bonus_credits,
+                    subscription_id,
+                    activated_at,
+                    paypal_status,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_key) DO UPDATE SET
+                    tier = excluded.tier,
+                    membership_source = excluded.membership_source,
+                    bonus_credits = excluded.bonus_credits,
+                    subscription_id = excluded.subscription_id,
+                    activated_at = excluded.activated_at,
+                    paypal_status = excluded.paypal_status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_key,
+                    final_membership_state["tier"],
+                    final_membership_state["membership_source"],
+                    int(final_membership_state.get("bonus_credits", 0) or 0),
+                    final_membership_state.get("subscription_id"),
+                    final_membership_state.get("activated_at"),
+                    final_membership_state.get("paypal_status"),
                     updated_at,
                 ),
             )
@@ -874,6 +1214,193 @@ class SongZipStore:
             )
 
         return events
+
+    def load_account_settings(self, account_key: str) -> Dict[str, Any]:
+        normalized_key = _normalize_account_key(account_key)
+        if not normalized_key:
+            return {}
+
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM account_settings WHERE account_key = ?",
+                (normalized_key,),
+            ).fetchone()
+
+        return self._settings_from_row(row)
+
+    def save_account_settings(
+        self,
+        account_key: str,
+        settings: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized_key = _normalize_account_key(account_key)
+        if not normalized_key:
+            raise SongZipStoreError("Account key is required to save SongZip settings.")
+
+        payload = dict(settings or {})
+        updated_at = _timestamp()
+        with self._managed_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO account_settings (
+                    account_key,
+                    settings_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?)
+                ON CONFLICT(account_key) DO UPDATE SET
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_key,
+                    json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+                    updated_at,
+                ),
+            )
+
+        return payload
+
+    def migrate_account_settings(
+        self,
+        source_account_key: str,
+        target_account_key: str,
+    ) -> Dict[str, Any]:
+        normalized_source = _normalize_account_key(source_account_key)
+        normalized_target = _normalize_account_key(target_account_key)
+        if not normalized_target:
+            return {}
+
+        if not normalized_source or normalized_source == normalized_target:
+            return self.load_account_settings(normalized_target)
+
+        with self._managed_connection() as connection:
+            source_row = connection.execute(
+                "SELECT * FROM account_settings WHERE account_key = ?",
+                (normalized_source,),
+            ).fetchone()
+            target_row = connection.execute(
+                "SELECT * FROM account_settings WHERE account_key = ?",
+                (normalized_target,),
+            ).fetchone()
+
+            source_settings = self._settings_from_row(source_row)
+            target_settings = self._settings_from_row(target_row)
+            if not source_settings and not target_settings:
+                return {}
+
+            if source_settings:
+                merged_settings = dict(target_settings)
+                merged_settings.update(source_settings)
+            else:
+                merged_settings = dict(target_settings)
+
+            updated_at = _timestamp()
+            connection.execute(
+                """
+                INSERT INTO account_settings (
+                    account_key,
+                    settings_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?)
+                ON CONFLICT(account_key) DO UPDATE SET
+                    settings_json = excluded.settings_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_target,
+                    json.dumps(merged_settings, ensure_ascii=True, separators=(",", ":")),
+                    updated_at,
+                ),
+            )
+
+            connection.execute(
+                "DELETE FROM account_settings WHERE account_key = ?",
+                (normalized_source,),
+            )
+
+        return merged_settings
+
+    def load_client_snapshot(self, client_id: str) -> Optional[Dict[str, Any]]:
+        resolved_client_id = str(client_id or "").strip()
+        if not resolved_client_id:
+            return None
+
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM client_snapshots WHERE client_id = ?",
+                (resolved_client_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        try:
+            snapshot = json.loads(row["snapshot_json"])
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(snapshot, dict):
+            return None
+
+        snapshot["client_id"] = resolved_client_id
+        snapshot["account_key"] = row["account_key"]
+        snapshot["updated_at"] = row["updated_at"]
+        return snapshot
+
+    def save_client_snapshot(
+        self,
+        client_id: str,
+        account_key: str,
+        snapshot: Dict[str, Any],
+    ) -> None:
+        resolved_client_id = str(client_id or "").strip()
+        normalized_key = _normalize_account_key(account_key)
+        if not resolved_client_id:
+            raise SongZipStoreError("Client id is required to save a SongZip session snapshot.")
+        if not normalized_key:
+            raise SongZipStoreError("Account key is required to save a SongZip session snapshot.")
+
+        updated_at = _timestamp()
+        payload = dict(snapshot or {})
+        payload["client_id"] = resolved_client_id
+        payload["account_key"] = normalized_key
+        payload["updated_at"] = updated_at
+
+        with self._managed_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO client_snapshots (
+                    client_id,
+                    account_key,
+                    snapshot_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(client_id) DO UPDATE SET
+                    account_key = excluded.account_key,
+                    snapshot_json = excluded.snapshot_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    resolved_client_id,
+                    normalized_key,
+                    json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
+                    updated_at,
+                ),
+            )
+
+    def delete_client_snapshot(self, client_id: str) -> None:
+        resolved_client_id = str(client_id or "").strip()
+        if not resolved_client_id:
+            return
+
+        with self._managed_connection() as connection:
+            connection.execute(
+                "DELETE FROM client_snapshots WHERE client_id = ?",
+                (resolved_client_id,),
+            )
 
     def grant_bonus_credits(
         self,
@@ -973,6 +1500,30 @@ class SongZipStore:
             "updated_at": row["updated_at"],
             "last_event": event_payload,
         }
+
+    def load_latest_paypal_subscription_for_account(
+        self,
+        account_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        normalized_key = _normalize_account_key(account_key)
+        if not normalized_key:
+            return None
+
+        with self._managed_connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM paypal_subscriptions
+                WHERE account_key = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (normalized_key,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return self.load_paypal_subscription(str(row["subscription_id"]))
 
     def save_paypal_subscription(self, subscription_id: str, record: Dict[str, Any]) -> None:
         with self._managed_connection() as connection:

@@ -185,6 +185,173 @@ class SongZipStoreTest(unittest.TestCase):
         self.assertEqual(restored["bonus_credits"], 10000)
         self.assertEqual(restored["downloads_lifetime"], 105)
 
+    def test_membership_persists_in_dedicated_database_row(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            account = store.register_account("persist@example.com", "password123")
+            store.set_account_membership(account["email"], "pro")
+            store.grant_bonus_credits(account["email"], 500)
+
+            with store._managed_connection() as connection:  # pylint: disable=protected-access
+                row = connection.execute(
+                    """
+                    SELECT tier, membership_source, bonus_credits, paypal_status
+                    FROM account_memberships
+                    WHERE account_key = ?
+                    """,
+                    (account["account_key"],),
+                ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["tier"], "pro")
+        self.assertEqual(row["membership_source"], "admin")
+        self.assertEqual(int(row["bonus_credits"] or 0), 500)
+        self.assertEqual(row["paypal_status"], "ADMIN_GRANTED")
+
+    def test_stale_free_save_does_not_overwrite_admin_membership(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            account = store.register_account("sticky@example.com", "password123")
+            store.set_account_membership(account["email"], "pro")
+            store.grant_bonus_credits(account["email"], 10000)
+
+            store.save_subscription(
+                account["account_key"],
+                {
+                    "tier": "free",
+                    "downloads_used": 12,
+                    "downloads_lifetime": 88,
+                    "membership_source": "free",
+                    "bonus_credits": 0,
+                    "subscription_id": None,
+                    "activated_at": None,
+                    "paypal_status": None,
+                },
+            )
+            reloaded = store.load_subscription(account["account_key"])
+
+        self.assertEqual(reloaded["tier"], "pro")
+        self.assertEqual(reloaded["membership_source"], "admin")
+        self.assertEqual(reloaded["bonus_credits"], 10000)
+        self.assertEqual(reloaded["downloads_used"], 12)
+        self.assertEqual(reloaded["downloads_lifetime"], 88)
+
+    def test_stale_save_does_not_reduce_usage_counters(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_subscription(
+                "acct-usage",
+                {
+                    "tier": "free",
+                    "downloads_used": 42,
+                    "downloads_lifetime": 142,
+                    "membership_source": "free",
+                    "bonus_credits": 0,
+                    "subscription_id": None,
+                    "activated_at": None,
+                    "paypal_status": None,
+                },
+            )
+            store.save_subscription(
+                "acct-usage",
+                {
+                    "tier": "free",
+                    "downloads_used": 4,
+                    "downloads_lifetime": 14,
+                    "membership_source": "free",
+                    "bonus_credits": 0,
+                    "subscription_id": None,
+                    "activated_at": None,
+                    "paypal_status": None,
+                },
+            )
+            reloaded = store.load_subscription("acct-usage")
+
+        self.assertEqual(reloaded["downloads_used"], 42)
+        self.assertEqual(reloaded["downloads_lifetime"], 142)
+
+    def test_account_settings_round_trip_and_migration(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_account_settings(
+                "guest-key",
+                {
+                    "threads": 3,
+                    "preload": True,
+                    "format": "mp3",
+                },
+            )
+            store.save_account_settings(
+                "acct-user",
+                {
+                    "threads": 1,
+                    "format": "m4a",
+                },
+            )
+
+            merged = store.migrate_account_settings("guest-key", "acct-user")
+            reloaded = store.load_account_settings("acct-user")
+            source_after = store.load_account_settings("guest-key")
+
+        self.assertEqual(merged["threads"], 3)
+        self.assertEqual(merged["preload"], True)
+        self.assertEqual(reloaded["format"], "mp3")
+        self.assertEqual(source_after, {})
+
+    def test_client_snapshot_round_trip(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_client_snapshot(
+                "browser-1",
+                "acct-demo",
+                {
+                    "job": {"status": "interrupted", "query": "artist url"},
+                    "song_states": [{"key": "song-1", "status": "queued"}],
+                    "events": [{"kind": "job", "message": "Queued"}],
+                },
+            )
+
+            restored = store.load_client_snapshot("browser-1")
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored["account_key"], "acct-demo")
+        self.assertEqual(restored["job"]["status"], "interrupted")
+        self.assertEqual(restored["song_states"][0]["key"], "song-1")
+
+    def test_latest_paypal_subscription_for_account_prefers_newest_record(self):
+        with TemporaryDirectory() as temp_dir:
+            store = SongZipStore(Path(temp_dir) / "songzip.sqlite3")
+            store.save_paypal_subscription(
+                "sub_old",
+                {
+                    "subscription_id": "sub_old",
+                    "account_key": "acct-demo",
+                    "tier": "basic",
+                    "status": "ACTIVE",
+                    "plan_id": "plan_basic",
+                    "activated_at": "2026-05-10T00:00:00+00:00",
+                    "last_event": {"event_type": "BILLING.SUBSCRIPTION.ACTIVATED"},
+                },
+            )
+            store.save_paypal_subscription(
+                "sub_new",
+                {
+                    "subscription_id": "sub_new",
+                    "account_key": "acct-demo",
+                    "tier": "pro",
+                    "status": "ACTIVE",
+                    "plan_id": "plan_pro",
+                    "activated_at": "2026-05-11T00:00:00+00:00",
+                    "last_event": {"event_type": "BILLING.SUBSCRIPTION.UPDATED"},
+                },
+            )
+
+            latest = store.load_latest_paypal_subscription_for_account("acct-demo")
+
+        self.assertIsNotNone(latest)
+        self.assertEqual(latest["subscription_id"], "sub_new")
+        self.assertEqual(latest["tier"], "pro")
+
 
 if __name__ == "__main__":
     unittest.main()
