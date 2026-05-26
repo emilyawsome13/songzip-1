@@ -64,6 +64,12 @@ services:
         value: https://songzip.onrender.com/api/account/google/callback
       - key: SONGZIP_ADMIN_EMAIL
         sync: false
+      - key: SONGZIP_REMOTE_STORE_URL
+        sync: false
+      - key: SONGZIP_REMOTE_STORE_SHARED_SECRET
+        sync: false
+      - key: SONGZIP_REMOTE_STORE_TIMEOUT_SECONDS
+        value: "10"
       - key: SONGZIP_PAYPAL_CLIENT_ID
         sync: false
       - key: SONGZIP_PAYPAL_CLIENT_SECRET

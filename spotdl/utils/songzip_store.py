@@ -1562,4 +1562,24 @@ class SongZipStore:
             )
 
 
-songzip_store = SongZipStore()
+def _build_songzip_store() -> Any:
+    remote_url = str(os.environ.get("SONGZIP_REMOTE_STORE_URL", "") or "").strip()
+    if not remote_url:
+        return SongZipStore()
+
+    remote_secret = str(
+        os.environ.get("SONGZIP_REMOTE_STORE_SHARED_SECRET", "") or ""
+    ).strip()
+    timeout_seconds = float(
+        os.environ.get("SONGZIP_REMOTE_STORE_TIMEOUT_SECONDS", "10") or 10
+    )
+    from spotdl.utils.songzip_store_remote import RemoteSongZipStore
+
+    return RemoteSongZipStore(
+        remote_url,
+        shared_secret=remote_secret,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+songzip_store = _build_songzip_store()
