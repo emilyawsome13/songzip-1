@@ -63,7 +63,7 @@ services:
       - key: SONGZIP_GOOGLE_LOGIN_REDIRECT_URI
         value: https://songzip.onrender.com/api/account/google/callback
       - key: SONGZIP_ADMIN_EMAIL
-        sync: false
+        value: gmelchor121@gmail.com
       - key: SONGZIP_REMOTE_STORE_URL
         sync: false
       - key: SONGZIP_REMOTE_STORE_SHARED_SECRET
