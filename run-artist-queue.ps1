@@ -13,6 +13,7 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 $env:PYTHONIOENCODING = "utf-8"
+$env:SONGZIP_PROVIDER_SEARCH_BEFORE_DIRECT = "true"
 
 function Normalize-QueueEntry {
     param(

@@ -571,6 +571,18 @@ class Downloader:
 
         return Downloader._is_hosted_render_environment()
 
+    @staticmethod
+    def _provider_search_before_direct_enabled() -> bool:
+        """
+        Check whether YouTube-backed songs should search providers before exact URLs.
+        """
+
+        value = os.environ.get("SONGZIP_PROVIDER_SEARCH_BEFORE_DIRECT")
+        if value is None:
+            return False
+
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+
     def _should_search_before_direct_download(self, song: Song) -> bool:
         """
         Decide whether provider search results should be tried before a direct URL.
@@ -582,10 +594,16 @@ class Downloader:
         - whether SongZip should prefer metadata-matched sources first
         """
 
-        if not self._direct_youtube_search_first_enabled():
+        provider_search_first = self._provider_search_before_direct_enabled()
+
+        if not self._direct_youtube_search_first_enabled() and not provider_search_first:
             return False
 
-        if str(getattr(song, "source_hint", "") or "").strip().lower() != "direct_youtube_video":
+        if (
+            str(getattr(song, "source_hint", "") or "").strip().lower()
+            != "direct_youtube_video"
+            and not provider_search_first
+        ):
             return False
 
         if not self._is_youtube_download_url(song.download_url):
@@ -1021,7 +1039,16 @@ class Downloader:
 
             if prefer_search_before_direct:
                 searched_for_fallback = True
-                searched_download_urls = self._direct_youtube_metadata_candidate_urls(song)
+                searched_download_urls: List[str] = []
+
+                if self._provider_search_before_direct_enabled():
+                    try:
+                        searched_download_urls = self.search_all(song)
+                    except LookupError:
+                        searched_download_urls = []
+
+                if len(searched_download_urls) == 0:
+                    searched_download_urls = self._direct_youtube_metadata_candidate_urls(song)
 
                 if len(searched_download_urls) == 0:
                     try:
@@ -1091,8 +1118,8 @@ class Downloader:
                         )
                         raise exc
 
-                    logger.info(
-                        "Download attempt failed for %s using %s, trying the next source",
+                    logger.debug(
+                        "Source attempt failed for %s using %s, trying the next source",
                         song.display_name,
                         download_url,
                     )

@@ -203,6 +203,23 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
         ):
             self.assertFalse(downloader._should_search_before_direct_download(song))
 
+    def test_artist_queue_can_search_providers_before_direct_youtube_urls(self):
+        downloader = Downloader.__new__(Downloader)
+        song = Song.from_missing_data(
+            name="Queue Song",
+            artist="Queue Artist",
+            artists=["Queue Artist"],
+            url="https://music.youtube.com/watch?v=queue-video",
+            download_url="https://music.youtube.com/watch?v=queue-video",
+        )
+
+        with patch.dict(
+            "os.environ",
+            {"SONGZIP_PROVIDER_SEARCH_BEFORE_DIRECT": "true"},
+            clear=False,
+        ):
+            self.assertTrue(downloader._should_search_before_direct_download(song))
+
     def test_ytartist_query_uses_youtube_music_artist_resolver_not_spotify(self):
         song_stub = Song.from_missing_data(
             name="Queue Song",
