@@ -4,6 +4,7 @@ from unittest.mock import patch
 from spotdl.console.entry_point import _disable_blocked_ytmusic_provider
 from spotdl.download.downloader import Downloader
 from spotdl.providers.audio.base import AudioProvider, AudioProviderError
+from spotdl.types.artist import Artist
 from spotdl.types.result import Result
 from spotdl.types.song import Song
 from spotdl.utils.matching import calc_album_match
@@ -201,6 +202,39 @@ class YouTubeMusicResilienceTest(unittest.TestCase):
             clear=False,
         ):
             self.assertFalse(downloader._should_search_before_direct_download(song))
+
+    def test_ytartist_query_uses_youtube_music_artist_resolver_not_spotify(self):
+        song_stub = Song.from_missing_data(
+            name="Queue Song",
+            artist="Queue Artist",
+            artists=["Queue Artist"],
+            url="https://music.youtube.com/watch?v=queue-video",
+            download_url="https://music.youtube.com/watch?v=queue-video",
+        )
+        artist_stub = Artist(
+            name="Queue Artist",
+            genres=[],
+            url="https://music.youtube.com/channel/queue-artist",
+            albums=[],
+            urls=[song_stub.url],
+            songs=[song_stub],
+        )
+
+        with patch(
+            "spotdl.utils.search.create_ytm_artist",
+            return_value=artist_stub,
+        ) as mock_create_ytm_artist, patch(
+            "spotdl.utils.search.Artist.from_search_term",
+            side_effect=AssertionError("ytartist must not use Spotify artist search"),
+        ):
+            songs = get_simple_songs(["ytartist: Queue Artist"])
+
+        mock_create_ytm_artist.assert_called_once_with(
+            "ytartist: Queue Artist",
+            fetch_songs=False,
+        )
+        self.assertEqual(len(songs), 1)
+        self.assertEqual(songs[0].download_url, "https://music.youtube.com/watch?v=queue-video")
 
     def test_album_match_handles_missing_song_album_name(self):
         song = Song.from_missing_data(

@@ -85,6 +85,19 @@ function Find-QueueMatchIndex {
     return -1
 }
 
+function Test-BlockingSpotifyRateLimit {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Output
+    )
+
+    return $Output -match "Spotify rate limit reached" -or
+        $Output -match "Retry-After was \d+ seconds" -or
+        $Output -match "SpotifyException.*429" -or
+        $Output -match "returned 429" -or
+        $Output -match "status code 429"
+}
+
 $projectDir = $PSScriptRoot
 $launcher = Join-Path $projectDir "run-spotdl.bat"
 
@@ -99,6 +112,8 @@ if (-not (Test-Path $ListPath)) {
 $progressPath = [System.IO.Path]::ChangeExtension($ListPath, ".progress.txt")
 $listLines = Get-Content $ListPath
 $libraryRoot = "C:\Users\autom\Documents\All Songs"
+$queueLogRoot = Join-Path $projectDir ".spotdl-tools\artist-queue\logs"
+New-Item -ItemType Directory -Path $queueLogRoot -Force | Out-Null
 $queue = @()
 for ($lineIndex = 0; $lineIndex -lt $listLines.Count; $lineIndex++) {
     $line = $listLines[$lineIndex]
@@ -177,12 +192,38 @@ for ($index = $StartIndex - 1; $index -lt $queue.Count; $index++) {
         $beforeCount = (Get-ChildItem -Path $libraryRoot -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
     }
 
-    & $launcher $item.Query
+    $safeLogName = ($item.Query -replace "[^\p{L}\p{Nd}\.-]+", "_").Trim("_")
+    if ([string]::IsNullOrWhiteSpace($safeLogName)) {
+        $safeLogName = "artist"
+    }
+    if ($safeLogName.Length -gt 80) {
+        $safeLogName = $safeLogName.Substring(0, 80)
+    }
+    $commandLog = Join-Path $queueLogRoot ("{0:D4}-{1}.log" -f ($index + 1), $safeLogName)
+
+    & $launcher $item.Query *>&1 | Tee-Object -FilePath $commandLog
     $exitCode = $LASTEXITCODE
+    $commandOutput = ""
+    if (Test-Path $commandLog) {
+        $commandOutput = Get-Content -Path $commandLog -Raw -ErrorAction SilentlyContinue
+    }
 
     $afterCount = 0
     if (Test-Path $libraryRoot) {
         $afterCount = (Get-ChildItem -Path $libraryRoot -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+    }
+
+    if (Test-BlockingSpotifyRateLimit -Output $commandOutput) {
+        Set-Content -Path $progressPath -Value $item.Original -Encoding utf8
+        $failures += [PSCustomObject]@{
+            Index = $index + 1
+            Query = "$($item.Query) (spotify rate limited)"
+            ExitCode = 429
+        }
+
+        Write-Host "[$($index + 1)/$($queue.Count)] Spotify rate limit detected. Leaving this artist pending and stopping the queue."
+        Write-Host "Retry later with: powershell -ExecutionPolicy Bypass -File .\run-artist-queue.ps1 -Resume"
+        exit 75
     }
 
     if ($exitCode -eq 0) {

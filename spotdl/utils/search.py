@@ -967,6 +967,8 @@ def get_simple_songs(
                         song.download_url = ytm_list.songs[index].download_url
 
                     lists.append(spot_list)
+        elif request.lower().startswith("ytartist:"):
+            lists.append(create_ytm_artist(request, fetch_songs=False))
         elif _is_supported_youtube_artist_url(request):
             lists.append(create_ytm_artist(request, fetch_songs=False))
         elif "open.spotify.com" in request and "track" in request:
@@ -990,14 +992,12 @@ def get_simple_songs(
             lists.append(Artist.from_url(request, fetch_songs=False))
         elif "open.spotify.com" in request and "user" in request:
             lists.extend(get_all_user_playlists(request))
-        elif "album:" in request:
+        elif request.lower().startswith("album:"):
             lists.append(Album.from_search_term(request, fetch_songs=False))
-        elif "playlist:" in request:
+        elif request.lower().startswith("playlist:"):
             lists.append(Playlist.from_search_term(request, fetch_songs=False))
-        elif "artist:" in request:
+        elif request.lower().startswith("artist:"):
             lists.append(Artist.from_search_term(request, fetch_songs=False))
-        elif request.lower().startswith("ytartist:"):
-            lists.append(create_ytm_artist(request, fetch_songs=False))
         elif request == "saved":
             lists.append(Saved.from_url(request, fetch_songs=False))
         elif request == "all-user-playlists":
